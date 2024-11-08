@@ -1,9 +1,10 @@
 import json
 from fnmatch import fnmatch
 from pathlib import Path
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 import einops
+import numpy as np
 import torch
 from huggingface_hub import snapshot_download
 from natsort import natsorted
@@ -25,10 +26,13 @@ class EncoderOutput(NamedTuple):
 class ForwardOutput(NamedTuple):
     sae_out: Tensor
 
-    latent_acts: Tensor
+    feature_acts: Tensor
+    """SAE features after ReLU/JumpReLU"""
+
+    latent_acts: Tensor | None
     """Activations of the top-k latents."""
 
-    latent_indices: Tensor
+    latent_indices: Tensor | None
     """Indices of the top-k features."""
 
     fvu: Tensor
@@ -39,6 +43,73 @@ class ForwardOutput(NamedTuple):
 
     multi_topk_fvu: Tensor
     """Multi-TopK FVU, if applicable."""
+
+    l1_loss: Tensor
+    """L1 loss for JumpReLU architectures"""
+
+    l2_loss: Tensor
+    """L2 loss over the reconstruction"""
+
+
+def rectangle(x: torch.Tensor) -> torch.Tensor:
+    return ((x > -0.5) & (x < 0.5)).to(x)
+
+
+class Step(torch.autograd.Function):
+    @staticmethod
+    def forward(
+        x: torch.Tensor, threshold: torch.Tensor, bandwidth: float
+    ) -> torch.Tensor:
+        return (x > threshold).to(x)
+
+    @staticmethod
+    def setup_context(
+        ctx: Any, inputs: tuple[torch.Tensor, torch.Tensor, float], output: torch.Tensor
+    ) -> None:
+        x, threshold, bandwidth = inputs
+        del output
+        ctx.save_for_backward(x, threshold)
+        ctx.bandwidth = bandwidth
+
+    @staticmethod
+    def backward(ctx: Any, grad_output: torch.Tensor) -> tuple[None, torch.Tensor, None]:  # type: ignore[override]
+        x, threshold = ctx.saved_tensors
+        bandwidth = ctx.bandwidth
+        threshold_grad = torch.sum(
+            -(1.0 / bandwidth) * rectangle((x - threshold) / bandwidth) * grad_output,
+            dim=0,
+        )
+        return None, threshold_grad, None
+
+
+class JumpReLU(torch.autograd.Function):
+    @staticmethod
+    def forward(
+        x: torch.Tensor, threshold: torch.Tensor, bandwidth: float
+    ) -> torch.Tensor:
+        return (x * (x > threshold)).to(x)
+
+    @staticmethod
+    def setup_context(
+        ctx: Any, inputs: tuple[torch.Tensor, torch.Tensor, float], output: torch.Tensor
+    ) -> None:
+        x, threshold, bandwidth = inputs
+        del output
+        ctx.save_for_backward(x, threshold)
+        ctx.bandwidth = bandwidth
+
+    @staticmethod
+    def backward(ctx: Any, grad_output: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, None]:  # type: ignore[override]
+        x, threshold = ctx.saved_tensors
+        bandwidth = ctx.bandwidth
+        x_grad = (x > threshold) * grad_output  # We don't apply STE to x input
+        threshold_grad = torch.sum(
+            -(threshold / bandwidth)
+            * rectangle((x - threshold) / bandwidth)
+            * grad_output,
+            dim=0,
+        )
+        return x_grad, threshold_grad, None
 
 
 class Sae(nn.Module):
@@ -57,13 +128,34 @@ class Sae(nn.Module):
         self.num_latents = cfg.num_latents or d_in * cfg.expansion_factor
 
         self.encoder = nn.Linear(d_in, self.num_latents, device=device, dtype=dtype)
-        self.encoder.bias.data.zero_()
+        torch.nn.init.kaiming_uniform_(self.encoder.weight.data)
+        torch.nn.init.zeros_(self.encoder.bias.data)
 
-        self.W_dec = nn.Parameter(self.encoder.weight.data.clone()) if decoder else None
+        self.W_dec = (
+            nn.Parameter(
+                torch.nn.init.kaiming_uniform_(
+                    torch.empty(
+                        self.num_latents, d_in, dtype=self.dtype, device=self.device
+                    )
+                )
+            )
+            if decoder
+            else None
+        )
         if decoder and self.cfg.normalize_decoder:
             self.set_decoder_norm_to_unit_norm()
-
         self.b_dec = nn.Parameter(torch.zeros(d_in, dtype=dtype, device=device))
+
+        if cfg.init_enc_as_dec_transpose:
+            self.encoder.weight.data = self.W_dec.data.clone()
+
+        self.jumprelu = self.cfg.jumprelu
+        if self.jumprelu:
+            self.log_threshold = nn.Parameter(
+                torch.ones(self.num_latents, dtype=dtype, device=device)
+                * np.log(cfg.jumprelu_init_threshold)
+            )
+            self.bandwidth = cfg.jumprelu_bandwidth
 
     @staticmethod
     def load_many(
@@ -84,7 +176,9 @@ class Sae(nn.Module):
 
         if layers is not None:
             return {
-                layer: Sae.load_from_disk(repo_path / layer, device=device, decoder=decoder)
+                layer: Sae.load_from_disk(
+                    repo_path / layer, device=device, decoder=decoder
+                )
                 for layer in natsorted(layers)
             }
         files = [
@@ -189,11 +283,18 @@ class Sae(nn.Module):
         return y + self.b_dec
 
     def forward(self, x: Tensor, dead_mask: Tensor | None = None) -> ForwardOutput:
-        pre_acts = self.pre_acts(x)
-
-        # Decode and compute residual
-        top_acts, top_indices = self.select_topk(pre_acts)
-        sae_out = self.decode(top_acts, top_indices)
+        # Encode, decode and compute residual
+        if self.cfg.k <= 0:
+            feature_acts = self.pre_acts(x)
+            if self.jumprelu:
+                threshold = torch.exp(self.log_threshold)
+                feature_acts = JumpReLU.apply(feature_acts, threshold, self.bandwidth)
+            top_acts, top_indices = None, None
+            sae_out = feature_acts @ self.W_dec + self.b_dec
+        else:
+            feature_acts = self.pre_acts(x)
+            top_acts, top_indices = self.select_topk(feature_acts)
+            sae_out = self.decode(top_acts, top_indices)
         e = sae_out - x
 
         # Used as a denominator for putting everything on a reasonable scale
@@ -209,7 +310,7 @@ class Sae(nn.Module):
             k_aux = min(k_aux, num_dead)
 
             # Don't include living latents in this loss
-            auxk_latents = torch.where(dead_mask[None], pre_acts, -torch.inf)
+            auxk_latents = torch.where(dead_mask[None], feature_acts, -torch.inf)
 
             # Top-k dead latents
             auxk_acts, auxk_indices = auxk_latents.topk(k_aux, sorted=False)
@@ -222,24 +323,39 @@ class Sae(nn.Module):
         else:
             auxk_loss = sae_out.new_tensor(0.0)
 
-        l2_loss = e.pow(2).sum()
-        fvu = l2_loss / total_variance
+        l2_loss = torch.nn.functional.mse_loss(sae_out, x, reduction="none")
+        l2_loss = l2_loss.sum(-1).mean()
+        fvu = e.pow(2).sum() / total_variance
 
         if self.cfg.multi_topk:
-            top_acts, top_indices = pre_acts.topk(4 * self.cfg.k, sorted=False)
+            top_acts, top_indices = feature_acts.topk(4 * self.cfg.k, sorted=False)
             sae_out = self.decode(top_acts, top_indices)
 
             multi_topk_fvu = (sae_out - x).pow(2).sum() / total_variance
         else:
             multi_topk_fvu = sae_out.new_tensor(0.0)
 
+        l1_loss = sae_out.new_tensor(0.0)
+        if self.jumprelu:
+            threshold = torch.exp(self.log_threshold)
+            l0 = torch.sum(Step.apply(feature_acts, threshold, self.bandwidth), dim=-1)  # type: ignore
+            l1_loss = l0.mean()
+        elif self.cfg.k <= 0:
+            # Scale features by the norm of their directions
+            weighted_feature_acts = feature_acts * self.W_dec.norm(dim=1)
+            sparsity = weighted_feature_acts.norm(p=1, dim=-1)
+            l1_loss = sparsity.mean()
+
         return ForwardOutput(
             sae_out,
+            feature_acts,
             top_acts,
             top_indices,
             fvu,
             auxk_loss,
             multi_topk_fvu,
+            l1_loss,
+            l2_loss,
         )
 
     @torch.no_grad()
