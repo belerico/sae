@@ -8,7 +8,7 @@ import torch
 import torch.distributed as dist
 from natsort import natsorted
 from safetensors.torch import load_model
-from torch import Tensor, nn
+from torch import Tensor
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
@@ -52,7 +52,6 @@ class SaeTrainer:
         # Distribute modules
         self.cfg = cfg
         self.distribute_modules()
-        N = len(cfg.hookpoints)
         device = model.device
         input_widths = resolve_widths(cfg, model, cfg.hookpoints)
         unique_widths = set(input_widths.values())

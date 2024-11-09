@@ -1,8 +1,8 @@
 from dataclasses import dataclass
-from typing import Any, Callable, Optional, Tuple
+from typing import Any, Callable, Dict, Optional, Tuple
 
 from simple_parsing import Serializable, list_field
-from torch import nn
+from torch import Tensor, nn
 
 from .utils import standard_hook
 
@@ -117,7 +117,10 @@ class TrainConfig(Serializable):
     normalize_activations: bool = False
     """Normalize activations so that they have expected square norm equal to 1."""
 
-    hook: Callable[[nn.Module, Tuple[Any, ...], Any], Optional[Any]] = standard_hook
+    hook: Callable[
+        [nn.Module, Tuple[Any, ...], Any, Dict[nn.Module, str], Dict[str, Tensor]],
+        Optional[Any],
+    ] = standard_hook
     """The hook function to be used to collect model activations"""
 
     log_to_wandb: bool = True
