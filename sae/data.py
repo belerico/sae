@@ -2,11 +2,11 @@
 
 import math
 from multiprocessing import cpu_count
-from typing import TypeVar, Union
+from typing import Iterable, Optional, TypeVar, Union
 
 import numpy as np
 import torch
-from datasets import Dataset, DatasetDict
+from datasets import Dataset, DatasetDict, IterableDataset
 from torch.utils.data import Dataset as TorchDataset
 from transformers import PreTrainedTokenizerBase
 
@@ -100,6 +100,68 @@ def chunk_and_tokenize(
     return data.with_format(format, columns=["input_ids"])
 
 
+def chunk_and_tokenize_streaming(
+    data: IterableDataset,
+    tokenizer: PreTrainedTokenizerBase,
+    *,
+    text_key: str = "text",
+    max_seq_len: int = 2048,
+    eos_token_id: Optional[int] = None,
+) -> IterableDataset:
+    """Perform GPT-style chunking and tokenization on a streaming dataset.
+
+    The function yields individual chunks of tokenized data, each of length `max_seq_len`.
+    Long sequences are split into multiple chunks, while short sequences are concatenated
+    with their neighbors. No padding is added, and all tokens are fully utilized.
+
+    Args:
+        data: The streaming dataset to chunk and tokenize.
+        tokenizer: The tokenizer to use.
+        text_key: The key in the dataset to use as the text to tokenize.
+        max_seq_len: The maximum length of a chunk of input ids.
+        eos_token_id: The id of the eos token. If None, will use tokenizer.eos_token_id.
+
+    Returns:
+        An IterableDataset over the tokenized chunks.
+    """
+    # Identify columns to remove
+    columns_to_remove = get_columns_all_equal(data)
+    if text_key in columns_to_remove:
+        columns_to_remove.remove(text_key)
+
+    def generator():
+        eos_token = tokenizer.eos_token or "<|endoftext|>"
+        eos_token_id_local = eos_token_id or tokenizer.eos_token_id or tokenizer.convert_tokens_to_ids(eos_token)
+        assert eos_token_id_local is not None, "The tokenizer must have an eos token id."
+
+        buffer = []
+        for sample in data:
+            # Remove unwanted columns from the sample
+            sample = {key: sample[key] for key in sample if key not in columns_to_remove}
+
+            text = sample[text_key]
+            tokens = tokenizer.encode(text, add_special_tokens=False)
+            tokens.append(eos_token_id_local)
+            buffer.extend(tokens)
+
+            # Slice the buffer into chunks of max_seq_len
+            while len(buffer) >= max_seq_len:
+                chunk = buffer[:max_seq_len]
+                buffer = buffer[max_seq_len:]
+                yield {'input_ids': torch.tensor(chunk)}
+
+        # Process any remaining tokens in the buffer
+        while len(buffer) >= max_seq_len:
+            chunk = buffer[:max_seq_len]
+            buffer = buffer[max_seq_len:]
+            yield {'input_ids': torch.tensor(chunk)}
+
+        # Yield the final chunk if any tokens are left
+        if buffer:
+            yield {'input_ids': torch.tensor(buffer)}
+
+    return IterableDataset.from_generator(generator)
+
 def get_columns_all_equal(dataset: Union[Dataset, DatasetDict]) -> list[str]:
     """Get a single list of columns in a `Dataset` or `DatasetDict`.
 
@@ -116,7 +178,6 @@ def get_columns_all_equal(dataset: Union[Dataset, DatasetDict]) -> list[str]:
         columns = next(iter(cols_by_split))
         if not all(cols == columns for cols in cols_by_split):
             raise ValueError("All splits must have the same columns")
-
         return columns
 
     return dataset.column_names
@@ -124,12 +185,13 @@ def get_columns_all_equal(dataset: Union[Dataset, DatasetDict]) -> list[str]:
 
 class MemmapDataset(TorchDataset):
     """Torch Dataset backed by a memory-mapped numpy array."""
+
     def __init__(
         self,
         data_path: str,
         ctx_len: int,
         max_examples: int | None = None,
-        dtype = np.uint16,
+        dtype=np.uint16,
     ):
         mmap = np.memmap(data_path, dtype=dtype, mode="r").reshape(-1, ctx_len)
         self.mmap = mmap[:max_examples]
@@ -138,14 +200,12 @@ class MemmapDataset(TorchDataset):
         return len(self.mmap)
 
     def __getitem__(self, idx):
-        return dict(
-            input_ids=torch.from_numpy(self.mmap[idx].astype(np.int64))
-        )
-    
+        return dict(input_ids=torch.from_numpy(self.mmap[idx].astype(np.int64)))
+
     def select(self, rng: range) -> "MemmapDataset":
         """Select a subset of the dataset."""
         mmap = MemmapDataset.__new__(MemmapDataset)
-        mmap.mmap = self.mmap[rng.start:rng.stop]
+        mmap.mmap = self.mmap[rng.start : rng.stop]
         return mmap
 
     def shard(self, num_shards: int, shard_id: int) -> "MemmapDataset":

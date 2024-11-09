@@ -1,3 +1,4 @@
+import os
 from collections import defaultdict
 from dataclasses import asdict
 from fnmatch import fnmatchcase
@@ -281,7 +282,6 @@ class SaeTrainer:
             ]
             try:
                 with torch.no_grad():
-                    # self.model(**batch.to(device))
                     self.model(batch["input_ids"].to(device))
             finally:
                 for handle in handles:
@@ -555,7 +555,10 @@ class SaeTrainer:
         """Save the SAEs to disk."""
 
         path = self.cfg.run_name or "sae-ckpts"
+        path = f"{path}/step_{self.global_step}"
         rank_zero = not dist.is_initialized() or dist.get_rank() == 0
+        if rank_zero:
+            os.makedirs(path, exist_ok=True)
 
         if rank_zero or self.cfg.distribute_modules:
             print("Saving checkpoint")

@@ -57,33 +57,120 @@ Programmatic usage is simple. Here is an example:
 ```python
 import torch
 from datasets import load_dataset
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from torch.utils.data import DataLoader
+from transformers import AutoModel, AutoTokenizer, DataCollatorWithPadding
 
-from sae import SaeConfig, SaeTrainer, TrainConfig
-from sae.data import chunk_and_tokenize
+from training import SaeConfig, SaeTrainer, TrainConfig
+from training.data import chunk_and_tokenize
 
-MODEL = "EleutherAI/pythia-160m"
-dataset = load_dataset(
-    "togethercomputer/RedPajama-Data-1T-Sample",
-    split="train",
-    trust_remote_code=True,
-)
-tokenizer = AutoTokenizer.from_pretrained(MODEL)
-tokenized = chunk_and_tokenize(dataset, tokenizer)
+if __name__ == "__main__":
+    model_name = "EleutherAI/pythia-70m-deduped"
+    total_tokens = 1_000_000_000
+    max_seq_len = 1024
+    batch_size = 2
+ 
+    dataset = load_dataset(
+        "roneneldan/TinyStories",
+        split="train",
+        trust_remote_code=True,
+    )
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    tokenized = chunk_and_tokenize(dataset, tokenizer, max_seq_len=max_seq_len)
+    data_loader = DataLoader(
+        tokenized,
+        batch_size=batch_size,
+    )
+    model = AutoModel.from_pretrained(
+        model_name,
+        device_map={"": "cuda"},
+        torch_dtype=torch.float32,
+        trust_remote_code=True,
+    )
+    cfg = TrainConfig(
+        SaeConfig(
+            expansion_factor=16,
+            k=-1,
+            jumprelu=True,
+            init_enc_as_dec_transpose=True
+        ),
+        batch_size=batch_size,
+        save_every=25_000,
+        layers=[3],
+        lr=1e-3,
+        lr_scheduler_name="constant",
+        lr_warmup_steps=0.0005,
+        lr_decay_steps=0.0,
+        l1_coefficient=1.0,
+        l1_warmup_steps=0.005,
+        max_seq_len=max_seq_len,
+        use_l2_loss=True,
+        cycle_iterator=True,
+        num_training_tokens=10_000_000,
+        normalize_activations=True,
+    )
+    trainer = SaeTrainer(cfg, data_loader, model)
+    trainer.fit()
+```
 
+To run an SAE training without the need to first download and then tokenize the dataset locally, one can instead stream the dataset and tokenize it on the fly:
 
-gpt = AutoModelForCausalLM.from_pretrained(
-    MODEL,
-    device_map={"": "cuda"},
-    torch_dtype=torch.bfloat16,
-)
+```python
+import torch
+from datasets import load_dataset
+from torch.utils.data import DataLoader
+from transformers import AutoModel, AutoTokenizer, DataCollatorWithPadding
 
-cfg = TrainConfig(
-    SaeConfig(gpt.config.hidden_size), batch_size=16
-)
-trainer = SaeTrainer(cfg, tokenized, gpt)
+from training import SaeConfig, SaeTrainer, TrainConfig
+from training.data import chunk_and_tokenize, chunk_and_tokenize_streaming
 
-trainer.fit()
+if __name__ == "__main__":
+    model_name = "EleutherAI/pythia-70m-deduped"
+    total_tokens = 1_000_000
+    max_seq_len = 1024
+    batch_size = 2
+
+    dataset = load_dataset(
+        "allenai/c4",
+        "en",
+        split="train",
+        trust_remote_code=True,
+        streaming=True,
+    )
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    tokenizer.pad_token = tokenizer.eos_token
+    dataset = chunk_and_tokenize_streaming(dataset, tokenizer, max_seq_len=max_seq_len)
+    data_loader = DataLoader(
+        dataset,
+        collate_fn=DataCollatorWithPadding(tokenizer),
+        batch_size=batch_size,
+    )
+    model = AutoModel.from_pretrained(
+        model_name,
+        device_map={"": "cuda"},
+        torch_dtype=torch.float32,
+        trust_remote_code=True,
+    )
+    cfg = TrainConfig(
+        SaeConfig(
+            expansion_factor=16, k=-1, jumprelu=True, init_enc_as_dec_transpose=True
+        ),
+        batch_size=batch_size,
+        save_every=25_000,
+        layers=[3],
+        lr=1e-3,
+        lr_scheduler_name="constant",
+        lr_warmup_steps=0.0005,
+        lr_decay_steps=0.0,
+        l1_coefficient=1.0,
+        l1_warmup_steps=0.005,
+        max_seq_len=max_seq_len,
+        use_l2_loss=True,
+        cycle_iterator=True,
+        num_training_tokens=10_000_000,
+        normalize_activations=True,
+    )
+    trainer = SaeTrainer(cfg, data_loader, model)
+    trainer.fit()
 ```
 
 ## Custom hookpoints
