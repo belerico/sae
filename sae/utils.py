@@ -230,7 +230,7 @@ class CycleIterator:
 class ActivationsNormalizer(nn.Module):
     def __init__(
         self,
-        eta: float = 0.01,
+        eta: float = 1.0,
         target_norm: float = 1.0,
         eps: float = 1e-8,
     ):
@@ -239,7 +239,7 @@ class ActivationsNormalizer(nn.Module):
         self.target_norm = target_norm
         self.eps = eps
         self.register_buffer(
-            "moving_mean_squared_norm",
+            "moving_l2_norms",
             torch.tensor([target_norm], dtype=torch.float32),
         )
         self.is_dist_initialized = dist.is_available() and dist.is_initialized()
@@ -247,19 +247,17 @@ class ActivationsNormalizer(nn.Module):
     def forward(self, x):
         # Compute L2 norms and mean squared norm for current batch
         l2_norms = torch.norm(x, p=2, dim=1)
-        mean_squared_norm = torch.mean(l2_norms**2)
         if self.is_dist_initialized:
-            mean_squared_norm = dist.all_reduce(mean_squared_norm)
-            mean_squared_norm /= dist.get_world_size()
+            l2_norms = dist.all_reduce(l2_norms)
+            l2_norms /= dist.get_world_size()
 
         # Update moving average of mean squared norm
-        self.moving_mean_squared_norm = (
-            self.moving_mean_squared_norm * (1 - self.eta)
-            + mean_squared_norm * self.eta
+        self.moving_l2_norms = (
+            self.moving_l2_norms * (1 - self.eta) + l2_norms * self.eta
         )
 
         # Normalize activations
-        normalized_activations = x / (l2_norms.unsqueeze(1) + self.eps)
+        normalized_activations = x / (self.moving_l2_norms.unsqueeze(1) + self.eps)
         return normalized_activations
 
 
