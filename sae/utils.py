@@ -227,37 +227,42 @@ class CycleIterator:
         return self
 
 
-class ActivationsNormalizer(nn.Module):
-    def __init__(
-        self,
-        eta: float = 1.0,
-        target_norm: float = 1.0,
-        eps: float = 1e-8,
-    ):
-        super(ActivationsNormalizer, self).__init__()
-        self.eta = eta
-        self.target_norm = target_norm
+class Norm1Normalizer(nn.Module):
+    def __init__(self, eps: float = 1e-8):
+        super(Norm1Normalizer, self).__init__()
         self.eps = eps
-        self.register_buffer(
-            "moving_l2_norms",
-            torch.tensor([target_norm], dtype=torch.float32),
-        )
-        self.is_dist_initialized = dist.is_available() and dist.is_initialized()
 
     def forward(self, x):
         # Compute L2 norms and mean squared norm for current batch
         l2_norms = torch.norm(x, p=2, dim=1)
-        if self.is_dist_initialized:
-            l2_norms = dist.all_reduce(l2_norms)
-            l2_norms /= dist.get_world_size()
-
-        # Update moving average of mean squared norm
-        self.moving_l2_norms = (
-            self.moving_l2_norms * (1 - self.eta) + l2_norms * self.eta
-        )
 
         # Normalize activations
-        normalized_activations = x / (self.moving_l2_norms.unsqueeze(1) + self.eps)
+        normalized_activations = x / (l2_norms.unsqueeze(1) + self.eps)
+        return normalized_activations
+
+
+class ExpectedNorm1Normalizer(nn.Module):
+    def __init__(self, epsilon=1e-8):
+        super(ExpectedNorm1Normalizer, self).__init__()
+        self.epsilon = epsilon  # Small constant to avoid division by zero
+        self.dist_avail = dist.is_available() and dist.is_initialized()
+
+    def forward(self, activations):
+        # activations: Tensor of shape (batch_size, feature_size)
+
+        # Step 1: Compute squared norms for each activation vector
+        squared_norms = torch.sum(activations**2, dim=1)  # Shape: (batch_size,)
+        if self.dist_avail:
+            squared_norms = dist.all_reduce(squared_norms)
+            squared_norms /= dist.get_world_size()
+
+        # Step 2: Compute mean squared norm over the batch
+        mean_squared_norm = torch.mean(squared_norms)
+
+        # Step 3: Normalize the activations
+        scaling_factor = torch.sqrt(mean_squared_norm + self.epsilon)
+        normalized_activations = activations / scaling_factor
+
         return normalized_activations
 
 

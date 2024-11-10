@@ -16,9 +16,9 @@ from transformers import PreTrainedModel
 
 from .config import TrainConfig
 from .sae import Sae
-from .utils import (ActivationsNormalizer, CycleIterator, L1Scheduler,
-                    geometric_median, get_layer_list, get_lr_scheduler,
-                    resolve_widths)
+from .utils import (CycleIterator, ExpectedNorm1Normalizer, L1Scheduler,
+                    Norm1Normalizer, geometric_median, get_layer_list,
+                    get_lr_scheduler, resolve_widths)
 
 
 class SaeTrainer:
@@ -52,6 +52,7 @@ class SaeTrainer:
         # Distribute modules
         self.cfg = cfg
         self.distribute_modules()
+        N = len(cfg.hookpoints)
         device = model.device
         input_widths = resolve_widths(cfg, model, cfg.hookpoints)
         unique_widths = set(input_widths.values())
@@ -160,7 +161,11 @@ class SaeTrainer:
 
             # Normalize activations
             if cfg.normalize_activations:
-                self.act_normalizer = ActivationsNormalizer()
+                self.act_normalizer = (
+                    ExpectedNorm1Normalizer()
+                    if "expected" in cfg.normalize_activations
+                    else Norm1Normalizer()
+                )
                 self.act_normalizer.to(self.model.device)
 
     def load_state(self, path: str):
@@ -250,6 +255,7 @@ class SaeTrainer:
         avg_fvu = defaultdict(float)
         avg_auxk_loss = defaultdict(float)
         avg_multi_topk_fvu = defaultdict(float)
+        running_l2_act_norm = 1.0
         avg_act_norm = 0.0
 
         hidden_dict: dict[str, Tensor] = {}
@@ -259,7 +265,7 @@ class SaeTrainer:
         maybe_wrapped: dict[str, DDP] | dict[str, Sae] = {}
         module_to_name = {v: k for k, v in name_to_module.items()}
 
-        for batch in self.dl:
+        for batch_idx, batch in enumerate(self.dl):
             if self.global_step >= self.training_steps:
                 break
 
@@ -328,6 +334,9 @@ class SaeTrainer:
                     if self.cfg.normalize_activations:
                         chunk = self.act_normalizer(chunk)
                     avg_act_norm += chunk.norm(p=2, dim=-1).mean().item() / denom
+                    running_l2_act_norm += (
+                        chunk.norm(p=2, dim=-1).mean().item() - running_l2_act_norm
+                    ) / (batch_idx + 1)
                     out = wrapped(
                         chunk,
                         dead_mask=(
@@ -446,7 +455,12 @@ class SaeTrainer:
                         if self.cfg.sae.multi_topk:
                             info[f"multi_topk_fvu/{name}"] = avg_multi_topk_fvu[name]
 
-                    info.update({"norm/avg_act_norm": avg_act_norm})
+                    info.update(
+                        {
+                            "norm/avg_act_norm": avg_act_norm,
+                            "norm/running_l2": running_l2_act_norm,
+                        }
+                    )
 
                     avg_auxk_loss.clear()
                     avg_fvu.clear()

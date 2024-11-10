@@ -114,8 +114,8 @@ class TrainConfig(Serializable):
     save_every: int = 1000
     """Save SAEs every `save_every` steps."""
 
-    normalize_activations: bool = False
-    """Normalize activations so that they have expected square norm equal to 1."""
+    normalize_activations: str | None = "expected_norm_1"
+    """Normalize activations. Cjoose between `expected_norm_1` or `norm_1`"""
 
     hook: Callable[
         [nn.Module, Tuple[Any, ...], Any, Dict[nn.Module, str], Dict[str, Tensor]],
@@ -131,3 +131,11 @@ class TrainConfig(Serializable):
         assert not (
             self.layers and self.layer_stride != 1
         ), "Cannot specify both `layers` and `layer_stride`."
+        if (
+            self.normalize_activations is not None
+            and self.normalize_activations.lower() not in {"expected_norm_1", "norm_1"}
+        ):
+            raise ValueError(
+                "`normalize_activations` must be one of `expected_norm_1` or `norm_1`. "
+                "To disable activations normalization pass None instead."
+            )
