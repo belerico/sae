@@ -148,7 +148,7 @@ class SaeTrainer:
         lr_decay_steps = int(cfg.lr_decay_steps * self.training_steps)
         lr_warmup_steps = int(cfg.lr_warmup_steps * self.training_steps)
         if cfg.lr_end is None:
-            cfg.lr_end = cfg.lr / 10
+            cfg.lr_end = cfg.lr
         self.lr_scheduler = get_lr_scheduler(
             cfg.lr_scheduler_name,
             optimizer=self.optimizer,
@@ -397,9 +397,9 @@ class SaeTrainer:
                     else:
                         recon_loss = out.fvu
                     if self.cfg.sae.k <= 0:
-                        current_l1_coefficient = 0.0
-                    else:
                         current_l1_coefficient = self.l1_scheduler.current_l1_coefficient
+                    else:
+                        current_l1_coefficient = 0.0
 
                     loss = (
                         recon_loss
@@ -456,11 +456,16 @@ class SaeTrainer:
                             > self.cfg.dead_feature_threshold
                         )
 
+                        if self.cfg.sae.k <= 0:
+                            current_l1_coefficient = self.l1_scheduler.current_l1_coefficient
+                        else:
+                            current_l1_coefficient = 0.0
+                            
                         info.update(
                             {
                                 f"fvu/{name}": avg_fvu[name],
                                 f"l1/{name}": avg_l1[name],
-                                "l1/l1_coefficient": self.l1_scheduler.current_l1_coefficient,
+                                "l1/l1_coefficient": current_l1_coefficient,
                                 f"l0/{name}": avg_l0[name],
                                 f"l2/{name}": avg_l2[name],
                                 f"dead_pct/{name}": mask.mean(
