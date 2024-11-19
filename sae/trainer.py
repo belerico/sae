@@ -396,17 +396,22 @@ class SaeTrainer:
                         recon_loss = out.l2_loss
                     else:
                         recon_loss = out.fvu
+                    if self.cfg.sae.k <= 0:
+                        current_l1_coefficient = 0.0
+                    else:
+                        current_l1_coefficient = self.l1_scheduler.current_l1_coefficient
+
                     loss = (
                         recon_loss
-                        + self.l1_scheduler.current_l1_coefficient * out.l1_loss
+                        + current_l1_coefficient * out.l1_loss
                         + self.cfg.auxk_alpha * out.auxk_loss
                         + out.multi_topk_fvu / 8
                     )
                     loss.div(acc_steps).backward()
 
                     # Update the did_fire mask
-                    if out.latent_indices is not None:
-                        did_fire[name][out.latent_indices.flatten()] = True
+                    if out.topk_indices is not None:
+                        did_fire[name][out.topk_indices.flatten()] = True
                         self.maybe_all_reduce(
                             did_fire[name], "max"
                         )  # max is boolean "any"
