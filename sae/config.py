@@ -124,7 +124,7 @@ class TrainConfig(Serializable):
     hook: Callable[
         [nn.Module, Tuple[Any, ...], Any, Dict[nn.Module, str], Dict[str, Tensor]],
         Optional[Any],
-    ] = standard_hook
+    ] | None = standard_hook
     """The hook function to be used to collect model activations"""
 
     log_to_wandb: bool = True

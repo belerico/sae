@@ -35,11 +35,15 @@ if __name__ == "__main__":
     )
     cfg = TrainConfig(
         SaeConfig(
-            expansion_factor=16, k=-1, jumprelu=True, init_enc_as_dec_transpose=True
+            expansion_factor=16,
+            k=-1,
+            jumprelu=True,
+            init_enc_as_dec_transpose=True,
+            equiangular_init=True,
         ),
         batch_size=batch_size,
         save_every=25_000,
-        layers=[3,4],
+        layers=[3, 4],
         lr=1e-3,
         lr_scheduler_name="constant",
         lr_warmup_steps=0.0005,
@@ -51,6 +55,7 @@ if __name__ == "__main__":
         cycle_iterator=True,
         num_training_tokens=10_000_000,
         normalize_activations="expected_norm_1",
+        log_to_wandb=True
     )
     trainer = SaeTrainer(cfg, data_loader, model)
     trainer.fit()

@@ -4,8 +4,6 @@ from dataclasses import asdict
 import copy
 from fnmatch import fnmatchcase
 from functools import partial
-from typing import cast
-
 import torch
 import torch.distributed as dist
 from natsort import natsorted
@@ -27,6 +25,7 @@ from .utils import (
     get_layer_list,
     get_lr_scheduler,
     resolve_widths,
+    standard_hook,
 )
 
 
@@ -76,6 +75,10 @@ class SaeTrainer:
             hook: Sae(input_widths[hook], cfg.sae, device)
             for hook in self.local_hookpoints()
         }
+
+        # Check standard hook
+        if cfg.hook is None:
+            cfg.hook = standard_hook
 
         # Dataloader
         self.dl = dl
@@ -615,8 +618,9 @@ class SaeTrainer:
                     torch.save(
                         act_normalizer.state_dict(), f"{path}/{name}_act_normalizer.pt"
                     )
-
-            self.cfg.save_json(f"{path}/config.json")
+            local_cfg = copy.deepcopy(self.cfg)
+            local_cfg.hook = None
+            local_cfg.save_json(f"{path}/config.json")
 
         # Barrier to ensure all ranks have saved before continuing
         if dist.is_initialized():
