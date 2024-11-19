@@ -2,11 +2,11 @@
 
 import math
 from multiprocessing import cpu_count
-from typing import Iterable, Optional, TypeVar, Union
+from typing import Iterable, Optional, Tuple, TypeVar, Union
 
 import numpy as np
 import torch
-from datasets import Dataset, DatasetDict, IterableDataset
+from datasets import Dataset, DatasetDict, IterableDataset, IterableDatasetDict
 from torch.utils.data import Dataset as TorchDataset
 from transformers import PreTrainedTokenizerBase
 
@@ -101,7 +101,7 @@ def chunk_and_tokenize(
 
 
 def chunk_and_tokenize_streaming(
-    data: IterableDataset,
+    data: Tuple[DatasetDict | Dataset | IterableDatasetDict | IterableDataset],
     tokenizer: PreTrainedTokenizerBase,
     *,
     text_key: str = "text",

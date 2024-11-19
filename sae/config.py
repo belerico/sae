@@ -79,7 +79,8 @@ class TrainConfig(Serializable):
     lr_scheduler_name: str = "constant"
     """LR scheduler name"""
 
-    lr_warmup_steps: int = 1000
+    lr_warmup_steps: float = 0.01
+    """Percentage (in [0;1]) of total steps to warm-up the learning rate"""
 
     lr_decay_steps: float = 0.0
     """Percentage (in [0;1]) of total steps to decay the learning rate"""
