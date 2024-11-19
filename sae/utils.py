@@ -387,11 +387,16 @@ else:
 
 
 def equiangular_init(
-    N: int, M: int, max_iters: int = 1000, lr: float = 1e-2, loss_thr: float = 1e-6
+    N: int,
+    M: int,
+    max_iters: int = 1000,
+    lr: float = 1e-2,
+    loss_thr: float = 1e-6,
+    device: str | torch.device ="cpu",
 ) -> Tensor:
     """Initialize N equiangular unit vectors in M-dimensional space."""
 
-    vectors = torch.randn(N, M, requires_grad=False)
+    vectors = torch.randn(N, M, requires_grad=False, device=device)
     vectors = vectors / vectors.norm(dim=1, keepdim=True)
     vectors.requires_grad = True
 
@@ -406,7 +411,7 @@ def equiangular_init(
         # Compute cosine similarities between all pairs
         cosine_matrix = torch.mm(vectors, vectors.t())
         # Subtract identity to exclude self-similarities
-        cosine_matrix = cosine_matrix - torch.eye(N)
+        cosine_matrix = cosine_matrix - torch.eye(N, device=device)
 
         # Compute penalties
         penalties = torch.clamp(cosine_matrix - desired_cosine, min=0)

@@ -144,7 +144,7 @@ class Sae(nn.Module):
         )
         if self.W_dec is not None:
             if cfg.equiangular_init:
-                self.W_dec.data = equiangular_init(self.num_latents, d_in).data
+                self.W_dec.data = equiangular_init(self.num_latents, d_in, device=self.device).data
             else:
                 torch.nn.init.kaiming_uniform_(self.W_dec.data)
             if cfg.init_enc_as_dec_transpose:
