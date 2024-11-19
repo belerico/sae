@@ -29,10 +29,10 @@ class ForwardOutput(NamedTuple):
     feature_acts: Tensor
     """SAE features after ReLU/JumpReLU"""
 
-    latent_acts: Tensor | None
+    topk_acts: Tensor | None
     """Activations of the top-k latents."""
 
-    latent_indices: Tensor | None
+    topk_indices: Tensor | None
     """Indices of the top-k features."""
 
     fvu: Tensor
@@ -327,7 +327,7 @@ class Sae(nn.Module):
         l2_loss = l2_loss.sum(-1).mean()
         fvu = e.pow(2).sum() / total_variance
 
-        if self.cfg.multi_topk:
+        if self.cfg.k > 0 and self.cfg.multi_topk:
             top_acts, top_indices = feature_acts.topk(4 * self.cfg.k, sorted=False)
             sae_out = self.decode(top_acts, top_indices)
 
@@ -340,7 +340,7 @@ class Sae(nn.Module):
             threshold = torch.exp(self.log_threshold)
             l0 = torch.sum(Step.apply(feature_acts, threshold, self.bandwidth), dim=-1)  # type: ignore
             l1_loss = l0.mean()
-        elif self.cfg.k <= 0:
+        elif self.cfg.k <= 0 and self.W_dec is not None:
             # Scale features by the norm of their directions
             weighted_feature_acts = feature_acts * self.W_dec.norm(dim=1)
             sparsity = weighted_feature_acts.norm(p=1, dim=-1)

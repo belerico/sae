@@ -35,9 +35,9 @@ with torch.inference_mode():
     model = AutoModelForCausalLM.from_pretrained("meta-llama/Meta-Llama-3-8B")
     outputs = model(**inputs, output_hidden_states=True)
 
-    latent_acts = []
+    topk_acts = []
     for sae, hidden_state in zip(saes.values(), outputs.hidden_states):
-        latent_acts.append(sae.encode(hidden_state))
+        topk_acts.append(sae.encode(hidden_state))
 
 # Do stuff with the latent activations
 ```
