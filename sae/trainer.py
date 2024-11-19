@@ -297,7 +297,7 @@ class SaeTrainer:
                     partial(
                         self.cfg.hook,
                         module_to_name=module_to_name,
-                        hidden_dict=hidden_dict
+                        hidden_dict=hidden_dict,
                     )
                 )
                 for mod in name_to_module.values()

@@ -40,6 +40,9 @@ class SaeConfig(Serializable):
     init_enc_as_dec_transpose: bool = False
     """Whether to initialize the encoder matrix as the decoder transpose"""
 
+    equiangular_init: bool = False
+    """Whether to use equiangular initialization"""
+
 
 @dataclass
 class TrainConfig(Serializable):

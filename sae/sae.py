@@ -12,7 +12,7 @@ from safetensors.torch import load_model, save_model
 from torch import Tensor, nn
 
 from .config import SaeConfig
-from .utils import decoder_impl
+from .utils import decoder_impl, equiangular_init
 
 
 class EncoderOutput(NamedTuple):
@@ -127,28 +127,34 @@ class Sae(nn.Module):
         self.d_in = d_in
         self.num_latents = cfg.num_latents or d_in * cfg.expansion_factor
 
+        # Encoder
         self.encoder = nn.Linear(d_in, self.num_latents, device=device, dtype=dtype)
         torch.nn.init.kaiming_uniform_(self.encoder.weight.data)
         torch.nn.init.zeros_(self.encoder.bias.data)
 
+        # Decoder
         self.W_dec = (
             nn.Parameter(
-                torch.nn.init.kaiming_uniform_(
-                    torch.empty(
-                        self.num_latents, d_in, dtype=self.dtype, device=self.device
-                    )
+                torch.empty(
+                    self.num_latents, d_in, dtype=self.dtype, device=self.device
                 )
             )
             if decoder
             else None
         )
+        if self.W_dec is not None:
+            if cfg.equiangular_init:
+                self.W_dec.data = equiangular_init(self.num_latents, d_in).data
+            else:
+                torch.nn.init.kaiming_uniform_(self.W_dec.data)
+            if cfg.init_enc_as_dec_transpose:
+                self.encoder.weight.data = self.W_dec.data.clone()
+
         if decoder and self.cfg.normalize_decoder:
             self.set_decoder_norm_to_unit_norm()
         self.b_dec = nn.Parameter(torch.zeros(d_in, dtype=dtype, device=device))
 
-        if cfg.init_enc_as_dec_transpose:
-            self.encoder.weight.data = self.W_dec.data.clone()
-
+        # JumpReLU
         self.jumprelu = self.cfg.jumprelu
         if self.jumprelu:
             self.log_threshold = nn.Parameter(

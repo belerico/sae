@@ -1,9 +1,20 @@
 from __future__ import annotations
 
+import math
 import os
 from functools import partial
-from typing import (TYPE_CHECKING, Any, Callable, Dict, Iterable, Optional,
-                    Tuple, Type, TypeVar, cast)
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    Dict,
+    Iterable,
+    Optional,
+    Tuple,
+    Type,
+    TypeVar,
+    cast,
+)
 
 import torch
 import torch.distributed as dist
@@ -373,3 +384,41 @@ else:
         decoder_impl = eager_decode
     else:
         decoder_impl = triton_decode
+
+
+def equiangular_init(
+    N: int, M: int, max_iters: int = 1000, lr: float = 1e-2, loss_thr: float = 1e-6
+) -> Tensor:
+    """Initialize N equiangular unit vectors in M-dimensional space."""
+
+    vectors = torch.randn(N, M, requires_grad=False)
+    vectors = vectors / vectors.norm(dim=1, keepdim=True)
+    vectors.requires_grad = True
+
+    # Desired cosine similarity
+    desired_cosine = math.cos(2 * torch.pi / N)
+
+    optimizer = optim.Adam([vectors], lr=lr)
+
+    for _ in range(max_iters):
+        optimizer.zero_grad()
+
+        # Compute cosine similarities between all pairs
+        cosine_matrix = torch.mm(vectors, vectors.t())
+        # Subtract identity to exclude self-similarities
+        cosine_matrix = cosine_matrix - torch.eye(N)
+
+        # Compute penalties
+        penalties = torch.clamp(cosine_matrix - desired_cosine, min=0)
+        loss = penalties.sum()
+
+        loss.backward()
+        optimizer.step()
+
+        # Re-normalize vectors to enforce unit norm
+        vectors.data = vectors.data / vectors.data.norm(dim=1, keepdim=True)
+
+        if loss.item() < loss_thr:
+            break
+
+    return vectors.detach()
