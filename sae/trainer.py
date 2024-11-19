@@ -1,8 +1,10 @@
 import os
 from collections import defaultdict
 from dataclasses import asdict
+import copy
 from fnmatch import fnmatchcase
 from functools import partial
+from typing import cast
 
 import torch
 import torch.distributed as dist
@@ -16,9 +18,16 @@ from transformers import PreTrainedModel
 
 from .config import TrainConfig
 from .sae import Sae
-from .utils import (CycleIterator, ExpectedNorm1Normalizer, L1Scheduler,
-                    Norm1Normalizer, geometric_median, get_layer_list,
-                    get_lr_scheduler, resolve_widths)
+from .utils import (
+    CycleIterator,
+    ExpectedNorm1Normalizer,
+    L1Scheduler,
+    Norm1Normalizer,
+    geometric_median,
+    get_layer_list,
+    get_lr_scheduler,
+    resolve_widths,
+)
 
 
 class SaeTrainer:
@@ -94,11 +103,13 @@ class SaeTrainer:
         }
 
         # Optimizer and schedulers (l1 coefficient and lr)
+        if cfg.lr is None:
+            cfg.lr = 2e-4 / (list(self.saes.values())[0].num_latents / (2**14)) ** 0.5
         pgs = [
             {
                 "params": sae.parameters(),
                 # Auto-select LR using 1 / sqrt(d) scaling law from Fig 3 of the paper
-                "lr": cfg.lr or 2e-4 / (sae.num_latents / (2**14)) ** 0.5,
+                "lr": cfg.lr,
             }
             for sae in self.saes.values()
         ]
@@ -159,14 +170,17 @@ class SaeTrainer:
                 final_l1_coefficient=cfg.l1_coefficient,
             )
 
-            # Normalize activations
-            if cfg.normalize_activations:
-                self.act_normalizer = (
-                    ExpectedNorm1Normalizer()
-                    if "expected" in cfg.normalize_activations
-                    else Norm1Normalizer()
-                )
-                self.act_normalizer.to(self.model.device)
+        # Normalize activations
+        if cfg.normalize_activations:
+            act_normalizer = (
+                ExpectedNorm1Normalizer()
+                if "expected" in cfg.normalize_activations
+                else Norm1Normalizer()
+            )
+            act_normalizer.to(self.model.device)
+            self.act_normalizers = {
+                hook: copy.deepcopy(act_normalizer) for hook in self.local_hookpoints()
+            }
 
     def load_state(self, path: str):
         """Load the trainer state from disk."""
@@ -197,10 +211,13 @@ class SaeTrainer:
             )
             self.l1_scheduler.load_state_dict(l1_state)
         if self.cfg.normalize_activations:
-            act_norm_state = torch.load(
-                f"{path}/act_normalizer.pt", map_location=device, weights_only=True
-            )
-            self.act_normalizer.load_state_dict(act_norm_state)
+            for name, act_normalizer in self.act_normalizers.items():
+                act_norm_state = torch.load(
+                    f"{path}/{name}_act_normalizer.pt",
+                    map_location=device,
+                    weights_only=True,
+                )
+                act_normalizer.load_state_dict(act_norm_state)
 
         for name, sae in self.saes.items():
             load_model(sae, f"{path}/{name}/sae.safetensors", device=str(device))
@@ -280,7 +297,7 @@ class SaeTrainer:
                     partial(
                         self.cfg.hook,
                         module_to_name=module_to_name,
-                        hidden_dict=hidden_dict,
+                        hidden_dict=hidden_dict
                     )
                 )
                 for mod in name_to_module.values()
@@ -332,7 +349,7 @@ class SaeTrainer:
                 # Save memory by chunking the activations
                 for chunk in hiddens.chunk(self.cfg.micro_acc_steps):
                     if self.cfg.normalize_activations:
-                        chunk = self.act_normalizer(chunk)
+                        chunk = self.act_normalizers[name](chunk)
                     avg_act_norm += chunk.norm(p=2, dim=-1).mean().item() / denom
                     running_l2_act_norm += (
                         chunk.norm(p=2, dim=-1).mean().item() - running_l2_act_norm
@@ -594,9 +611,10 @@ class SaeTrainer:
             if self.cfg.sae.k <= 0:
                 torch.save(self.l1_scheduler.state_dict(), f"{path}/l1_scheduler.pt")
             if self.cfg.normalize_activations:
-                torch.save(
-                    self.act_normalizer.state_dict(), f"{path}/act_normalizer.pt"
-                )
+                for name, act_normalizer in self.act_normalizers.items():
+                    torch.save(
+                        act_normalizer.state_dict(), f"{path}/{name}_act_normalizer.pt"
+                    )
 
             self.cfg.save_json(f"{path}/config.json")
 
