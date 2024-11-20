@@ -639,7 +639,9 @@ class SaeTrainer:
             if self.cfg.normalize_activations:
                 torch.save(self.scaling_factors, f"{path}/scaling_factors.pt")
 
-            self.cfg.save_json(f"{path}/config.json")
+            local_cfg = copy.deepcopy(self.cfg)
+            local_cfg.hook = None
+            local_cfg.save_json(f"{path}/config.json")
 
         # Barrier to ensure all ranks have saved before continuing
         if dist.is_initialized():
