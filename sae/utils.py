@@ -253,7 +253,7 @@ class Norm1Normalizer(nn.Module):
 
 
 class ExpectedNorm1Normalizer(nn.Module):
-    def __init__(self, eta: float = 0.01, epsilon=1e-8):
+    def __init__(self, eta: float = 0.05, epsilon=1e-8):
         super(ExpectedNorm1Normalizer, self).__init__()
         self.eta = eta
         self.epsilon = epsilon

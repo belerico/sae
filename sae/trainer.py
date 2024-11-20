@@ -352,7 +352,8 @@ class SaeTrainer:
                 # Save memory by chunking the activations
                 for chunk in hiddens.chunk(self.cfg.micro_acc_steps):
                     if self.cfg.normalize_activations:
-                        chunk = self.act_normalizers[name](chunk)
+                        with torch.no_grad():
+                            chunk = self.act_normalizers[name](chunk)
                     avg_act_norm += chunk.norm(p=2, dim=-1).mean().item() / denom
                     running_l2_act_norm += (
                         chunk.norm(p=2, dim=-1).mean().item() - running_l2_act_norm
