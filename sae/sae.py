@@ -143,12 +143,13 @@ class Sae(nn.Module):
             if decoder
             else None
         )
-        if decoder and self.cfg.normalize_decoder:
-            self.set_decoder_norm_to_unit_norm()
         self.b_dec = nn.Parameter(torch.zeros(d_in, dtype=dtype, device=device))
 
         if cfg.init_enc_as_dec_transpose:
             self.encoder.weight.data = self.W_dec.data.clone()
+
+        if decoder and self.cfg.normalize_decoder:
+            self.set_decoder_norm_to_unit_norm()
 
         self.jumprelu = self.cfg.jumprelu
         if self.jumprelu:
