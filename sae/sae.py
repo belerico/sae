@@ -72,14 +72,15 @@ class Step(torch.autograd.Function):
         ctx.bandwidth = bandwidth
 
     @staticmethod
-    def backward(ctx: Any, grad_output: torch.Tensor) -> tuple[None, torch.Tensor, None]:  # type: ignore[override]
+    def backward(ctx: Any, grad_output: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, None]:  # type: ignore[override]
         x, threshold = ctx.saved_tensors
+        x_grad = 0.0 * grad_output
         bandwidth = ctx.bandwidth
         threshold_grad = torch.sum(
             -(1.0 / bandwidth) * rectangle((x - threshold) / bandwidth) * grad_output,
             dim=0,
         )
-        return None, threshold_grad, None
+        return x_grad, threshold_grad, None
 
 
 class JumpReLU(torch.autograd.Function):
@@ -285,16 +286,21 @@ class Sae(nn.Module):
     def forward(self, x: Tensor, dead_mask: Tensor | None = None) -> ForwardOutput:
         # Encode, decode and compute residual
         if self.cfg.k <= 0:
-            feature_acts = self.pre_acts(x)
             if self.jumprelu:
+                sae_in = x.to(self.dtype) - self.b_dec
+                pre_acts = self.encoder(sae_in)
                 threshold = torch.exp(self.log_threshold)
-                feature_acts = JumpReLU.apply(feature_acts, threshold, self.bandwidth)
+                feature_acts: torch.Tensor = JumpReLU.apply(pre_acts, threshold, self.bandwidth)
+            else:
+                feature_acts = self.pre_acts(x)
             top_acts, top_indices = None, None
             sae_out = feature_acts @ self.W_dec + self.b_dec
         else:
             feature_acts = self.pre_acts(x)
             top_acts, top_indices = self.select_topk(feature_acts)
             sae_out = self.decode(top_acts, top_indices)
+        
+        # SAE residual
         e = sae_out - x
 
         # Used as a denominator for putting everything on a reasonable scale
@@ -323,28 +329,25 @@ class Sae(nn.Module):
         else:
             auxk_loss = sae_out.new_tensor(0.0)
 
-        l2_loss = torch.nn.functional.mse_loss(sae_out, x, reduction="none")
-        l2_loss = l2_loss.sum(-1).mean()
+        l2_loss = (e ** 2).sum(-1).mean()
         fvu = e.pow(2).sum() / total_variance
 
         if self.cfg.k > 0 and self.cfg.multi_topk:
             top_acts, top_indices = feature_acts.topk(4 * self.cfg.k, sorted=False)
             sae_out = self.decode(top_acts, top_indices)
-
             multi_topk_fvu = (sae_out - x).pow(2).sum() / total_variance
         else:
             multi_topk_fvu = sae_out.new_tensor(0.0)
 
-        l1_loss = sae_out.new_tensor(0.0)
-        if self.jumprelu:
-            threshold = torch.exp(self.log_threshold)
-            l0 = torch.sum(Step.apply(feature_acts, threshold, self.bandwidth), dim=-1)  # type: ignore
-            l1_loss = l0.mean()
-        elif self.cfg.k <= 0 and self.W_dec is not None:
-            # Scale features by the norm of their directions
-            weighted_feature_acts = feature_acts * self.W_dec.norm(dim=1)
-            sparsity = weighted_feature_acts.norm(p=1, dim=-1)
-            l1_loss = sparsity.mean()
+        sparsity_loss = sae_out.new_tensor(0.0)
+        if self.cfg.k <= 0:
+            if self.jumprelu:
+                threshold = torch.exp(self.log_threshold)
+                sparsity_loss = torch.sum(Step.apply(pre_acts, threshold, self.bandwidth), dim=-1).mean()  # type: ignore
+            elif self.W_dec is not None:
+                # Scale features by the norm of their directions
+                weighted_feature_acts = feature_acts * self.W_dec.norm(dim=1)
+                sparsity_loss = weighted_feature_acts.norm(p=1, dim=-1).mean()
 
         return ForwardOutput(
             sae_out,
@@ -354,7 +357,7 @@ class Sae(nn.Module):
             fvu,
             auxk_loss,
             multi_topk_fvu,
-            l1_loss,
+            sparsity_loss,
             l2_loss,
         )
 

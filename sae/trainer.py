@@ -62,7 +62,7 @@ class SaeTrainer:
         self.distribute_modules()
         N = len(cfg.hookpoints)
         device = model.device
-        input_widths = resolve_widths(cfg, model, cfg.hookpoints)
+        input_widths = resolve_widths(cfg, model, cfg.hookpoints, dl=dl)
         unique_widths = set(input_widths.values())
         if cfg.distribute_modules and len(unique_widths) > 1:
             # dist.all_to_all requires tensors to have the same shape across ranks
@@ -130,7 +130,7 @@ class SaeTrainer:
                 print("Run `pip install bitsandbytes` for less memory usage.")
         else:
             from torch.optim import Adam
-        self.optimizer = Adam(pgs, betas=cfg.adam_betas)
+        self.optimizer = Adam(pgs, betas=cfg.adam_betas, eps=cfg.adam_epsilon)
 
         # LR scheduler
         if not (0 <= cfg.lr_decay_steps <= 1):
