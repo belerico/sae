@@ -67,6 +67,9 @@ class TrainConfig(Serializable):
     adam_8bit: bool = False
     """Whether to use 8bit Adam"""
 
+    adam_epsilon: float = 1e-8
+    """Adam epsilon"""
+
     adam_betas: tuple[float, float] = (0.0, 0.999)
     """Adam betas"""
 
