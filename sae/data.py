@@ -130,12 +130,6 @@ def chunk_and_tokenize_streaming(
         columns_to_remove.remove(text_key)
 
     def generator():
-        eos_token = tokenizer.eos_token or "<|endoftext|>"
-        eos_token_id_local = (
-            eos_token_id or tokenizer.eos_token_id or tokenizer.convert_tokens_to_ids(eos_token)
-        )
-        assert eos_token_id_local is not None, "The tokenizer must have an eos token id."
-
         buffer = []
         for sample in data:
             # Remove unwanted columns from the sample
@@ -143,7 +137,6 @@ def chunk_and_tokenize_streaming(
 
             text = sample[text_key]
             tokens = tokenizer.encode(text, add_special_tokens=False)
-            tokens.append(eos_token_id_local)
             buffer.extend(tokens)
 
             # Slice the buffer into chunks of max_seq_len
