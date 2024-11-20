@@ -37,15 +37,16 @@ if __name__ == "__main__":
             k=-1,
             jumprelu=True,
             init_enc_as_dec_transpose=True,
-            equiangular_init=True,
+            equiangular_init=False,
         ),
         batch_size=batch_size,
         save_every=25_000,
         layers=list(range(6)),
-        lr=1e-3,
+        lr=7e-4,
+        lr_end=0.0,
         lr_scheduler_name="constant",
         lr_warmup_steps=0.0005,
-        lr_decay_steps=0.0,
+        lr_decay_steps=0.9995,
         l1_coefficient=1.0,
         l1_warmup_steps=0.005,
         max_seq_len=max_seq_len,
@@ -53,7 +54,8 @@ if __name__ == "__main__":
         cycle_iterator=True,
         num_training_tokens=1_000_000_000,
         normalize_activations="expected_norm_1",
-        log_to_wandb=True
+        log_to_wandb=True,
+        run_name="no-equiangular-jumprelu-lambda-1-lr-7e-4"
     )
     trainer = SaeTrainer(cfg, data_loader, model)
     trainer.fit()
