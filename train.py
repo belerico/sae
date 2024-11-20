@@ -18,11 +18,22 @@ if __name__ == "__main__":
         trust_remote_code=True,
         streaming=True,
     )
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    tokenizer.pad_token = tokenizer.eos_token
-    dataset = chunk_and_tokenize_streaming(dataset, tokenizer, max_seq_len=max_seq_len)
+    # tokenizer = AutoTokenizer.from_pretrained(model_name)
+    # tokenizer.pad_token = tokenizer.eos_token
+    # dataset = chunk_and_tokenize_streaming(dataset, tokenizer, max_seq_len=max_seq_len)
+    dataset = load_dataset(
+        "NeelNanda/pile-small-tokenized-2b",
+        streaming=True,
+        split="train",
+        trust_remote_code=True,
+    )
+
+    def from_tokens(x):
+        return {"input_ids": torch.stack(list(torch.tensor(example["tokens"]) for example in x), dim=0)}
+
     data_loader = DataLoader(
         dataset,
+        collate_fn=from_tokens,
         batch_size=batch_size,
     )
     model = AutoModel.from_pretrained(
@@ -38,19 +49,22 @@ if __name__ == "__main__":
         batch_size=batch_size,
         save_every=25_000,
         layers=[3],
-        lr=1e-3,
+        lr=1e-4,
+        lr_end=1e-5,
         lr_scheduler_name="constant",
-        lr_warmup_steps=0.0005,
-        lr_decay_steps=0.0,
-        l1_coefficient=3,
-        l1_warmup_steps=0.005,
+        lr_warmup_steps=0.05,
+        lr_decay_steps=0.95,
+        l1_coefficient=1,
+        l1_warmup_steps=0.5,
         max_seq_len=max_seq_len,
         use_l2_loss=True,
         cycle_iterator=True,
         num_training_tokens=1_000_000_000,
         normalize_activations=1,
-        num_norm_estimation_tokens=8_000_000,
-        run_name="pythia-70m-deduped-1024-lambda-0.5-lr-7e-4",
+        num_norm_estimation_tokens=2_000_000,
+        run_name="pythia-70m-deduped-1024-lambda-0.5-lr-1e-4",
+        adam_betas=(0.0, 0.999),
+        adam_epsilon=1e-8,
     )
     trainer = SaeTrainer(cfg, data_loader, model)
     trainer.fit()
