@@ -29,7 +29,11 @@ if __name__ == "__main__":
     )
 
     def from_tokens(x):
-        return {"input_ids": torch.stack(list(torch.tensor(example["tokens"]) for example in x), dim=0)}
+        return {
+            "input_ids": torch.stack(
+                list(torch.tensor(example["tokens"]) for example in x), dim=0
+            )
+        }
 
     data_loader = DataLoader(
         dataset,
@@ -44,17 +48,21 @@ if __name__ == "__main__":
     )
     cfg = TrainConfig(
         SaeConfig(
-            expansion_factor=16, k=-1, jumprelu=True, init_enc_as_dec_transpose=True
+            expansion_factor=16,
+            k=-1,
+            jumprelu=True,
+            init_enc_as_dec_transpose=True,
         ),
         batch_size=batch_size,
         save_every=25_000,
         layers=[3],
-        lr=1e-4,
-        lr_end=1e-5,
+        lr=7e-5,
+        lr_init=7e-6,
+        lr_end=7e-6,
         lr_scheduler_name="constant",
         lr_warmup_steps=0.05,
         lr_decay_steps=0.95,
-        l1_coefficient=1,
+        l1_coefficient=1e-3,
         l1_warmup_steps=0.5,
         max_seq_len=max_seq_len,
         use_l2_loss=True,
@@ -62,7 +70,7 @@ if __name__ == "__main__":
         num_training_tokens=1_000_000_000,
         normalize_activations=1,
         num_norm_estimation_tokens=2_000_000,
-        run_name="pythia-70m-deduped-1024-lambda-0.5-lr-1e-4",
+        run_name="pythia-70m-deduped-1024-lambda-0.5-lr-7e-5",
         adam_betas=(0.0, 0.999),
         adam_epsilon=1e-8,
     )
