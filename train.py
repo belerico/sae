@@ -27,7 +27,7 @@ if __name__ == "__main__":
     )
     model = AutoModel.from_pretrained(
         model_name,
-        device_map={"": "mps"},
+        device_map={"": "cuda"},
         torch_dtype=torch.float32,
         trust_remote_code=True,
     )
@@ -37,18 +37,20 @@ if __name__ == "__main__":
         ),
         batch_size=batch_size,
         save_every=25_000,
-        layers=list(range(6)),
+        layers=[3],
         lr=1e-3,
         lr_scheduler_name="constant",
         lr_warmup_steps=0.0005,
         lr_decay_steps=0.0,
-        l1_coefficient=1.0,
+        l1_coefficient=3,
         l1_warmup_steps=0.005,
         max_seq_len=max_seq_len,
         use_l2_loss=True,
         cycle_iterator=True,
         num_training_tokens=1_000_000_000,
-        normalize_activations="expected_norm_1",
+        normalize_activations=1,
+        num_norm_estimation_tokens=8_000_000,
+        run_name="pythia-70m-deduped-1024-lambda-0.5-lr-7e-4",
     )
     trainer = SaeTrainer(cfg, data_loader, model)
     trainer.fit()

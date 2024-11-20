@@ -227,51 +227,6 @@ class CycleIterator:
         return self
 
 
-class Norm1Normalizer(nn.Module):
-    def __init__(self, eps: float = 1e-8):
-        super(Norm1Normalizer, self).__init__()
-        self.eps = eps
-
-    def forward(self, x):
-        # Compute L2 norms and mean squared norm for current batch
-        l2_norms = torch.norm(x, p=2, dim=1)
-
-        # Normalize activations
-        normalized_activations = x / (l2_norms.unsqueeze(1) + self.eps)
-        return normalized_activations
-
-
-class ExpectedNorm1Normalizer(nn.Module):
-    def __init__(self, eta: float = 0.01, epsilon=1e-8):
-        super(ExpectedNorm1Normalizer, self).__init__()
-        self.eta = eta
-        self.epsilon = epsilon
-        self.running_mean_sqaured_norm = None
-        self.dist_avail = dist.is_available() and dist.is_initialized()
-
-    def forward(self, activations):
-        # activations: Tensor of shape (batch_size, feature_size)
-
-        squared_norms = torch.sum(activations**2, dim=-1)  # Shape: (batch_size,)
-        mean_squared_norm = torch.mean(squared_norms)
-        if self.dist_avail:
-            mean_squared_norm = dist.all_reduce(mean_squared_norm)
-            mean_squared_norm /= dist.get_world_size()
-
-        if self.running_mean_sqaured_norm is None:
-            self.running_mean_sqaured_norm = mean_squared_norm
-        self.running_mean_sqaured_norm = (
-            self.running_mean_sqaured_norm * (1 - self.eta)
-            + mean_squared_norm * self.eta
-        )
-
-        # Step 3: Normalize the activations
-        scaling_factor = torch.sqrt(mean_squared_norm + self.epsilon)
-        normalized_activations = activations / scaling_factor
-
-        return normalized_activations
-
-
 def assert_type(typ: Type[T], obj: Any) -> T:
     """Assert that an object is of a given type at runtime and return it."""
     if not isinstance(obj, typ):

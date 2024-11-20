@@ -1,7 +1,7 @@
+import copy
 import os
 from collections import defaultdict
 from dataclasses import asdict
-import copy
 from fnmatch import fnmatchcase
 from functools import partial
 from typing import cast
@@ -17,12 +17,11 @@ from tqdm.auto import tqdm
 from transformers import PreTrainedModel
 
 from .config import TrainConfig
+from .normalization import estimate_norm_scaling_factor
 from .sae import Sae
 from .utils import (
     CycleIterator,
-    ExpectedNorm1Normalizer,
     L1Scheduler,
-    Norm1Normalizer,
     geometric_median,
     get_layer_list,
     get_lr_scheduler,
@@ -172,15 +171,25 @@ class SaeTrainer:
 
         # Normalize activations
         if cfg.normalize_activations:
-            act_normalizer = (
-                ExpectedNorm1Normalizer()
-                if "expected" in cfg.normalize_activations
-                else Norm1Normalizer()
-            )
-            act_normalizer.to(self.model.device)
-            self.act_normalizers = {
-                hook: copy.deepcopy(act_normalizer) for hook in self.local_hookpoints()
+            name_to_module = {
+                name: self.model.get_submodule(name) for name in self.cfg.hookpoints
             }
+            module_to_name = {v: k for k, v in name_to_module.items()}
+            scaling_factors = estimate_norm_scaling_factor(
+                dl,
+                model,
+                cfg.num_norm_estimation_tokens,
+                cfg.hook,
+                module_to_name=module_to_name,
+                target_norm=cfg.normalize_activations,
+                device=device,
+            )
+            if dist.is_available() and dist.is_initialized():
+                scaling_factors = {
+                    name: dist.all_reduce(scaling_factor, op=dist.ReduceOp.AVG)
+                    for name, scaling_factor in scaling_factors.items()
+                }
+            self.scaling_factors = scaling_factors
 
     def load_state(self, path: str):
         """Load the trainer state from disk."""
@@ -210,14 +219,6 @@ class SaeTrainer:
                 f"{path}/l1_scheduler.pt", map_location=device, weights_only=True
             )
             self.l1_scheduler.load_state_dict(l1_state)
-        if self.cfg.normalize_activations:
-            for name, act_normalizer in self.act_normalizers.items():
-                act_norm_state = torch.load(
-                    f"{path}/{name}_act_normalizer.pt",
-                    map_location=device,
-                    weights_only=True,
-                )
-                act_normalizer.load_state_dict(act_norm_state)
 
         for name, sae in self.saes.items():
             load_model(sae, f"{path}/{name}/sae.safetensors", device=str(device))
@@ -272,8 +273,12 @@ class SaeTrainer:
         avg_fvu = defaultdict(float)
         avg_auxk_loss = defaultdict(float)
         avg_multi_topk_fvu = defaultdict(float)
-        running_l2_act_norm = 1.0
-        avg_act_norm = 0.0
+        avg_act_norm = defaultdict(float)
+        running_mean_act_norm = {}
+
+        # Function to update the running mean
+        def update_running_mean(running_mean, new_value, count):
+            return (running_mean * (count - 1) + new_value) / count
 
         hidden_dict: dict[str, Tensor] = {}
         name_to_module = {
@@ -297,7 +302,7 @@ class SaeTrainer:
                     partial(
                         self.cfg.hook,
                         module_to_name=module_to_name,
-                        hidden_dict=hidden_dict
+                        hidden_dict=hidden_dict,
                     )
                 )
                 for mod in name_to_module.values()
@@ -342,18 +347,26 @@ class SaeTrainer:
                 if raw.cfg.normalize_decoder:
                     raw.set_decoder_norm_to_unit_norm()
 
+                # Normalize the activations
+                if self.cfg.normalize_activations:
+                    with torch.no_grad():
+                        hiddens = hiddens * self.scaling_factors[name]
+
+                # Save the running mean of the L2 norm of the activations
+                l2_norm = hiddens.norm(p=2, dim=-1).mean()
+                if name not in running_mean_act_norm:
+                    running_mean_act_norm[name] = l2_norm
+                else:
+                    running_mean_act_norm[name] = update_running_mean(
+                        running_mean_act_norm[name], l2_norm, batch_idx + 1
+                    )
+
                 acc_steps = self.cfg.grad_acc_steps * self.cfg.micro_acc_steps
                 denom = acc_steps * self.cfg.wandb_log_frequency
                 wrapped = maybe_wrapped[name]
 
                 # Save memory by chunking the activations
                 for chunk in hiddens.chunk(self.cfg.micro_acc_steps):
-                    if self.cfg.normalize_activations:
-                        chunk = self.act_normalizers[name](chunk)
-                    avg_act_norm += chunk.norm(p=2, dim=-1).mean().item() / denom
-                    running_l2_act_norm += (
-                        chunk.norm(p=2, dim=-1).mean().item() - running_l2_act_norm
-                    ) / (batch_idx + 1)
                     out = wrapped(
                         chunk,
                         dead_mask=(
@@ -396,7 +409,9 @@ class SaeTrainer:
                     if self.cfg.sae.k <= 0:
                         current_l1_coefficient = 0.0
                     else:
-                        current_l1_coefficient = self.l1_scheduler.current_l1_coefficient
+                        current_l1_coefficient = (
+                            self.l1_scheduler.current_l1_coefficient
+                        )
 
                     loss = (
                         recon_loss
@@ -479,8 +494,14 @@ class SaeTrainer:
 
                     info.update(
                         {
-                            "norm/avg_act_norm": avg_act_norm,
-                            "norm/running_l2": running_l2_act_norm,
+                            f"norm/avg_act_norm_{name}": avg_act_norm[name]
+                            for name in self.saes
+                        }
+                    )
+                    info.update(
+                        {
+                            f"norm/running_mean_act_norm_{name}": running_mean_act_norm[name]
+                            for name in self.saes
                         }
                     )
 
@@ -490,7 +511,7 @@ class SaeTrainer:
                     avg_l0.clear()
                     avg_l2.clear()
                     avg_multi_topk_fvu.clear()
-                    avg_act_norm = 0.0
+                    avg_act_norm.clear()
 
                     if self.cfg.distribute_modules:
                         outputs = [{} for _ in range(dist.get_world_size())]
@@ -616,10 +637,7 @@ class SaeTrainer:
             if self.cfg.sae.k <= 0:
                 torch.save(self.l1_scheduler.state_dict(), f"{path}/l1_scheduler.pt")
             if self.cfg.normalize_activations:
-                for name, act_normalizer in self.act_normalizers.items():
-                    torch.save(
-                        act_normalizer.state_dict(), f"{path}/{name}_act_normalizer.pt"
-                    )
+                torch.save(self.scaling_factors, f"{path}/scaling_factors.pt")
 
             self.cfg.save_json(f"{path}/config.json")
 
