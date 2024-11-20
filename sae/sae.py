@@ -57,9 +57,7 @@ def rectangle(x: torch.Tensor) -> torch.Tensor:
 
 class Step(torch.autograd.Function):
     @staticmethod
-    def forward(
-        x: torch.Tensor, threshold: torch.Tensor, bandwidth: float
-    ) -> torch.Tensor:
+    def forward(x: torch.Tensor, threshold: torch.Tensor, bandwidth: float) -> torch.Tensor:
         return (x > threshold).to(x)
 
     @staticmethod
@@ -85,9 +83,7 @@ class Step(torch.autograd.Function):
 
 class JumpReLU(torch.autograd.Function):
     @staticmethod
-    def forward(
-        x: torch.Tensor, threshold: torch.Tensor, bandwidth: float
-    ) -> torch.Tensor:
+    def forward(x: torch.Tensor, threshold: torch.Tensor, bandwidth: float) -> torch.Tensor:
         return (x * (x > threshold)).to(x)
 
     @staticmethod
@@ -105,9 +101,7 @@ class JumpReLU(torch.autograd.Function):
         bandwidth = ctx.bandwidth
         x_grad = (x > threshold) * grad_output  # We don't apply STE to x input
         threshold_grad = torch.sum(
-            -(threshold / bandwidth)
-            * rectangle((x - threshold) / bandwidth)
-            * grad_output,
+            -(threshold / bandwidth) * rectangle((x - threshold) / bandwidth) * grad_output,
             dim=0,
         )
         return x_grad, threshold_grad, None
@@ -135,9 +129,7 @@ class Sae(nn.Module):
         self.W_dec = (
             nn.Parameter(
                 torch.nn.init.kaiming_uniform_(
-                    torch.empty(
-                        self.num_latents, d_in, dtype=self.dtype, device=self.device
-                    )
+                    torch.empty(self.num_latents, d_in, dtype=self.dtype, device=self.device)
                 )
             )
             if decoder
@@ -178,9 +170,7 @@ class Sae(nn.Module):
 
         if layers is not None:
             return {
-                layer: Sae.load_from_disk(
-                    repo_path / layer, device=device, decoder=decoder
-                )
+                layer: Sae.load_from_disk(repo_path / layer, device=device, decoder=decoder)
                 for layer in natsorted(layers)
             }
         files = [
@@ -300,7 +290,7 @@ class Sae(nn.Module):
             feature_acts = self.pre_acts(x)
             top_acts, top_indices = self.select_topk(feature_acts)
             sae_out = self.decode(top_acts, top_indices)
-        
+
         # SAE residual
         e = sae_out - x
 
@@ -330,7 +320,7 @@ class Sae(nn.Module):
         else:
             auxk_loss = sae_out.new_tensor(0.0)
 
-        l2_loss = (e ** 2).sum(-1).mean()
+        l2_loss = (e**2).sum(-1).mean()
         fvu = e.pow(2).sum() / total_variance
 
         if self.cfg.k > 0 and self.cfg.multi_topk:

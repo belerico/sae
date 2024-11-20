@@ -8,8 +8,7 @@ import torch.distributed as dist
 from datasets import Dataset, load_dataset
 from safetensors.torch import load_model
 from simple_parsing import field, parse
-from transformers import (AutoModel, AutoTokenizer, BitsAndBytesConfig,
-                          PreTrainedModel)
+from transformers import AutoModel, AutoTokenizer, BitsAndBytesConfig, PreTrainedModel
 
 from .data import MemmapDataset, chunk_and_tokenize
 from .trainer import SaeTrainer, TrainConfig
@@ -74,9 +73,7 @@ def load_artifacts(args: RunConfig, rank: int) -> tuple[PreTrainedModel, Dataset
         args.model,
         device_map={"": f"cuda:{rank}"},
         quantization_config=(
-            BitsAndBytesConfig(load_in_8bit=args.load_in_8bit)
-            if args.load_in_8bit
-            else None
+            BitsAndBytesConfig(load_in_8bit=args.load_in_8bit) if args.load_in_8bit else None
         ),
         revision=args.revision,
         torch_dtype=dtype,
@@ -157,7 +154,9 @@ def run():
             trainer.load_state(args.run_name or "sae-ckpts")
         elif args.finetune:
             for name, sae in trainer.saes.items():
-                load_model(sae, f"{args.finetune}/{name}/sae.safetensors", device=str(model.device))
+                load_model(
+                    sae, f"{args.finetune}/{name}/sae.safetensors", device=str(model.device)
+                )
 
         trainer.fit()
 

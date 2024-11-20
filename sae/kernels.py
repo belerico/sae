@@ -45,9 +45,7 @@ def triton_sparse_transpose_dense_matmul(
         ]
     )  # shape (2, A * K)
     coo_values = sparse_values.view(-1)[sorted_indices.indices]  # shape (A * K,)
-    return triton_coo_sparse_dense_matmul(
-        coo_indices, coo_values, dense, N, BLOCK_SIZE_AK
-    )
+    return triton_coo_sparse_dense_matmul(coo_indices, coo_values, dense, N, BLOCK_SIZE_AK)
 
 
 def triton_coo_sparse_dense_matmul(
@@ -163,9 +161,7 @@ def triton_sparse_transpose_dense_matmul_kernel(
                 last_k = k
 
             if v != 0:
-                accum += v * tl.load(
-                    dense_ptr + a * stride_da + b_offsets, mask=b_offsets < B
-                )
+                accum += v * tl.load(dense_ptr + a * stride_da + b_offsets, mask=b_offsets < B)
 
     tl.atomic_add(
         out_ptr + last_k * B + BLOCK_SIZE_B * pid_b + b_offsets,
@@ -278,9 +274,7 @@ def triton_sparse_dense_matmul_kernel(
                 dense_ptr + i * stride_dn + offsets_b * stride_db, mask=offsets_b < B
             )
 
-    tl.store(
-        out_ptr + pid * B + offsets_b, accum.to(sparse_values.dtype), mask=offsets_b < B
-    )
+    tl.store(out_ptr + pid * B + offsets_b, accum.to(sparse_values.dtype), mask=offsets_b < B)
 
 
 def triton_dense_dense_sparseout_matmul(
@@ -365,9 +359,7 @@ def triton_dense_dense_sparseout_matmul_kernel(
     pid = tl.program_id(0)
 
     offsets_k = tl.arange(0, BLOCK_SIZE_K)
-    at_indices = tl.load(
-        at_indices_ptr + pid * K + offsets_k, mask=offsets_k < K
-    )  # shape (K,)
+    at_indices = tl.load(at_indices_ptr + pid * K + offsets_k, mask=offsets_k < K)  # shape (K,)
 
     offsets_b = tl.arange(0, BLOCK_SIZE_B)
     dense1 = tl.load(
@@ -403,9 +395,7 @@ class TritonDecoder(torch.autograd.Function):
     @staticmethod
     def forward(ctx, sparse_indices, sparse_values, decoder_weight):
         ctx.save_for_backward(sparse_indices, sparse_values, decoder_weight)
-        return triton_sparse_dense_matmul(
-            sparse_indices, sparse_values, decoder_weight.T
-        )
+        return triton_sparse_dense_matmul(sparse_indices, sparse_values, decoder_weight.T)
 
     @staticmethod
     def backward(ctx, grad_output):
@@ -419,9 +409,7 @@ class TritonDecoder(torch.autograd.Function):
 
         return (
             None,
-            triton_dense_dense_sparseout_matmul(
-                grad_output, decoder_weight, sparse_indices
-            ),
+            triton_dense_dense_sparseout_matmul(grad_output, decoder_weight, sparse_indices),
             # decoder is contiguous when transposed so this is a matching layout
             decoder_grad,
             None,

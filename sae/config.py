@@ -76,6 +76,9 @@ class TrainConfig(Serializable):
     lr: float | None = None
     """Base LR. If None, it is automatically chosen based on the number of latents."""
 
+    lr_init: float | None = None
+    """Initial LR to use for the warm-up phase. If None, it is automatically set to `lr`"""
+
     lr_end: float | None = None
     """End LR. If None, it is automatically set to `lr / 10`"""
 

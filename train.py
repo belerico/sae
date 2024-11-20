@@ -30,9 +30,7 @@ if __name__ == "__main__":
 
     def from_tokens(x):
         return {
-            "input_ids": torch.stack(
-                list(torch.tensor(example["tokens"]) for example in x), dim=0
-            )
+            "input_ids": torch.stack(list(torch.tensor(example["tokens"]) for example in x), dim=0)
         }
 
     data_loader = DataLoader(

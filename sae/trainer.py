@@ -4,7 +4,6 @@ from collections import defaultdict
 from dataclasses import asdict
 from fnmatch import fnmatchcase
 from functools import partial
-from typing import cast
 
 import torch
 import torch.distributed as dist
@@ -72,8 +71,7 @@ class SaeTrainer:
             )
         self.model = model
         self.saes = {
-            hook: Sae(input_widths[hook], cfg.sae, device)
-            for hook in self.local_hookpoints()
+            hook: Sae(input_widths[hook], cfg.sae, device) for hook in self.local_hookpoints()
         }
 
         # Dataloader
@@ -154,6 +152,7 @@ class SaeTrainer:
             decay_steps=lr_decay_steps,
             lr_end=cfg.lr_end,
             num_cycles=1,
+            lr_init=cfg.lr_init,
         )
 
         # L1 coefficient scheduler
@@ -171,9 +170,7 @@ class SaeTrainer:
 
         # Normalize activations
         if cfg.normalize_activations:
-            name_to_module = {
-                name: self.model.get_submodule(name) for name in self.cfg.hookpoints
-            }
+            name_to_module = {name: self.model.get_submodule(name) for name in self.cfg.hookpoints}
             module_to_name = {v: k for k, v in name_to_module.items()}
             scaling_factors = estimate_norm_scaling_factor(
                 dl,
@@ -196,22 +193,14 @@ class SaeTrainer:
         device = self.model.device
 
         # Load the train state first so we can print the step number
-        train_state = torch.load(
-            f"{path}/state.pt", map_location=device, weights_only=True
-        )
+        train_state = torch.load(f"{path}/state.pt", map_location=device, weights_only=True)
         self.global_step = train_state["global_step"]
         self.num_tokens_since_fired = train_state["num_tokens_since_fired"]
 
-        print(
-            f"\033[92mResuming training at step {self.global_step} from '{path}'\033[0m"
-        )
+        print(f"\033[92mResuming training at step {self.global_step} from '{path}'\033[0m")
 
-        lr_state = torch.load(
-            f"{path}/lr_scheduler.pt", map_location=device, weights_only=True
-        )
-        opt_state = torch.load(
-            f"{path}/optimizer.pt", map_location=device, weights_only=True
-        )
+        lr_state = torch.load(f"{path}/lr_scheduler.pt", map_location=device, weights_only=True)
+        opt_state = torch.load(f"{path}/optimizer.pt", map_location=device, weights_only=True)
         self.optimizer.load_state_dict(opt_state)
         self.lr_scheduler.load_state_dict(lr_state)
         if self.cfg.sae.k <= 0:
@@ -244,9 +233,7 @@ class SaeTrainer:
                 print("Weights & Biases not installed, skipping logging.")
                 self.cfg.log_to_wandb = False
 
-        num_sae_params = sum(
-            p.numel() for s in self.saes.values() for p in s.parameters()
-        )
+        num_sae_params = sum(p.numel() for s in self.saes.values() for p in s.parameters())
         num_model_params = sum(p.numel() for p in self.model.parameters())
         print(f"Number of SAE parameters: {num_sae_params:_}")
         print(f"Number of model parameters: {num_model_params:_}")
@@ -281,9 +268,7 @@ class SaeTrainer:
             return (running_mean * (count - 1) + new_value) / count
 
         hidden_dict: dict[str, Tensor] = {}
-        name_to_module = {
-            name: self.model.get_submodule(name) for name in self.cfg.hookpoints
-        }
+        name_to_module = {name: self.model.get_submodule(name) for name in self.cfg.hookpoints}
         maybe_wrapped: dict[str, DDP] | dict[str, Sae] = {}
         module_to_name = {v: k for k, v in name_to_module.items()}
 
@@ -370,25 +355,20 @@ class SaeTrainer:
                     out = wrapped(
                         chunk,
                         dead_mask=(
-                            self.num_tokens_since_fired[name]
-                            > self.cfg.dead_feature_threshold
+                            self.num_tokens_since_fired[name] > self.cfg.dead_feature_threshold
                             if self.cfg.auxk_alpha > 0
                             else None
                         ),
                     )
 
-                    avg_fvu[name] += float(
-                        self.maybe_all_reduce(out.fvu.detach()) / denom
-                    )
+                    avg_fvu[name] += float(self.maybe_all_reduce(out.fvu.detach()) / denom)
                     avg_l0[name] += float(
                         self.maybe_all_reduce(
                             (out.feature_acts.detach() > 0).float().sum(-1).mean()
                         )
                         / denom
                     )
-                    avg_l2[name] += float(
-                        self.maybe_all_reduce(out.l2_loss.detach()) / denom
-                    )
+                    avg_l2[name] += float(self.maybe_all_reduce(out.l2_loss.detach()) / denom)
                     if self.cfg.auxk_alpha > 0:
                         avg_auxk_loss[name] += float(
                             self.maybe_all_reduce(out.auxk_loss.detach()) / denom
@@ -398,9 +378,7 @@ class SaeTrainer:
                             self.maybe_all_reduce(out.multi_topk_fvu.detach()) / denom
                         )
                     if self.cfg.sae.k <= 0:
-                        avg_l1[name] += float(
-                            self.maybe_all_reduce(out.l1_loss.detach()) / denom
-                        )
+                        avg_l1[name] += float(self.maybe_all_reduce(out.l1_loss.detach()) / denom)
 
                     if self.cfg.use_l2_loss:
                         recon_loss = out.l2_loss
@@ -409,9 +387,7 @@ class SaeTrainer:
                     if self.cfg.sae.k <= 0:
                         current_l1_coefficient = 0.0
                     else:
-                        current_l1_coefficient = (
-                            self.l1_scheduler.current_l1_coefficient
-                        )
+                        current_l1_coefficient = self.l1_scheduler.current_l1_coefficient
 
                     loss = (
                         recon_loss
@@ -424,9 +400,7 @@ class SaeTrainer:
                     # Update the did_fire mask
                     if out.topk_indices is not None:
                         did_fire[name][out.topk_indices.flatten()] = True
-                        self.maybe_all_reduce(
-                            did_fire[name], "max"
-                        )  # max is boolean "any"
+                        self.maybe_all_reduce(did_fire[name], "max")  # max is boolean "any"
 
                 # Clip gradient norm independently for each SAE
                 torch.nn.utils.clip_grad_norm_(raw.parameters(), 1.0)
@@ -456,17 +430,11 @@ class SaeTrainer:
                     for mask in did_fire.values():
                         mask.zero_()
 
-                if (
-                    self.cfg.log_to_wandb
-                    and (step + 1) % self.cfg.wandb_log_frequency == 0
-                ):
+                if self.cfg.log_to_wandb and (step + 1) % self.cfg.wandb_log_frequency == 0:
                     info = {}
 
                     for name in self.saes:
-                        mask = (
-                            self.num_tokens_since_fired[name]
-                            > self.cfg.dead_feature_threshold
-                        )
+                        mask = self.num_tokens_since_fired[name] > self.cfg.dead_feature_threshold
 
                         info.update(
                             {
@@ -475,9 +443,7 @@ class SaeTrainer:
                                 "l1/l1_coefficient": self.l1_scheduler.current_l1_coefficient,
                                 f"l0/{name}": avg_l0[name],
                                 f"l2/{name}": avg_l2[name],
-                                f"dead_pct/{name}": mask.mean(
-                                    dtype=torch.float32
-                                ).item(),
+                                f"dead_pct/{name}": mask.mean(dtype=torch.float32).item(),
                             }
                         )
                         info.update(
@@ -493,10 +459,7 @@ class SaeTrainer:
                             info[f"multi_topk_fvu/{name}"] = avg_multi_topk_fvu[name]
 
                     info.update(
-                        {
-                            f"norm/avg_act_norm_{name}": avg_act_norm[name]
-                            for name in self.saes
-                        }
+                        {f"norm/avg_act_norm_{name}": avg_act_norm[name] for name in self.saes}
                     )
                     info.update(
                         {
@@ -531,11 +494,7 @@ class SaeTrainer:
         pbar.close()
 
     def local_hookpoints(self) -> list[str]:
-        return (
-            self.module_plan[dist.get_rank()]
-            if self.module_plan
-            else self.cfg.hookpoints
-        )
+        return self.module_plan[dist.get_rank()] if self.module_plan else self.cfg.hookpoints
 
     def maybe_all_cat(self, x: Tensor) -> Tensor:
         """Concatenate a tensor across all processes."""

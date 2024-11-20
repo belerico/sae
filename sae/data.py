@@ -2,7 +2,7 @@
 
 import math
 from multiprocessing import cpu_count
-from typing import Iterable, Optional, Tuple, TypeVar, Union
+from typing import Optional, Tuple, TypeVar, Union
 
 import numpy as np
 import torch
@@ -131,7 +131,9 @@ def chunk_and_tokenize_streaming(
 
     def generator():
         eos_token = tokenizer.eos_token or "<|endoftext|>"
-        eos_token_id_local = eos_token_id or tokenizer.eos_token_id or tokenizer.convert_tokens_to_ids(eos_token)
+        eos_token_id_local = (
+            eos_token_id or tokenizer.eos_token_id or tokenizer.convert_tokens_to_ids(eos_token)
+        )
         assert eos_token_id_local is not None, "The tokenizer must have an eos token id."
 
         buffer = []
@@ -148,19 +150,20 @@ def chunk_and_tokenize_streaming(
             while len(buffer) >= max_seq_len:
                 chunk = buffer[:max_seq_len]
                 buffer = buffer[max_seq_len:]
-                yield {'input_ids': torch.tensor(chunk)}
+                yield {"input_ids": torch.tensor(chunk)}
 
         # Process any remaining tokens in the buffer
         while len(buffer) >= max_seq_len:
             chunk = buffer[:max_seq_len]
             buffer = buffer[max_seq_len:]
-            yield {'input_ids': torch.tensor(chunk)}
+            yield {"input_ids": torch.tensor(chunk)}
 
         # Yield the final chunk if any tokens are left
         if buffer:
-            yield {'input_ids': torch.tensor(buffer)}
+            yield {"input_ids": torch.tensor(buffer)}
 
     return IterableDataset.from_generator(generator)
+
 
 def get_columns_all_equal(dataset: Union[Dataset, DatasetDict]) -> list[str]:
     """Get a single list of columns in a `Dataset` or `DatasetDict`.

@@ -2,8 +2,15 @@ from __future__ import annotations
 
 import os
 from functools import partial
-from typing import (TYPE_CHECKING, Any, Callable, Dict, Iterable, Optional,
-                    Tuple, Type, TypeVar, cast)
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Dict,
+    Iterable,
+    Type,
+    TypeVar,
+    cast,
+)
 
 import torch
 import torch.distributed as dist
@@ -33,6 +40,7 @@ def get_lr_scheduler(
     decay_steps: int,
     lr_end: float,
     num_cycles: int,
+    lr_init: float | None = None,
 ) -> lr_scheduler.LRScheduler:
     """
     Loosely based on this, seemed simpler write this than import
@@ -46,6 +54,7 @@ def get_lr_scheduler(
         decay_steps (int, optional): Number of linear decay steps to 0. Defaults to 0.
         num_cycles (int, optional): Number of cycles for cosine annealing with warm restarts. Defaults to 1.
         lr_end (float, optional): Final learning rate multiplier before decay. Defaults to 0.0.
+        lr_init (float, optional): Initial learning rate. Defaults to 0.0. If None, it is set to 1 / warm_up_steps.
     """
     if scheduler_name.lower() not in {
         "constant",
@@ -72,10 +81,15 @@ def get_lr_scheduler(
     schedulers: list[lr_scheduler.LRScheduler] = []
     milestones: list[int] = []
     if warm_up_steps > 0:
+        # Warmup lr from lr_init to lr
+        if lr_init is None:
+            start_factor = 1 / warm_up_steps
+        else:
+            start_factor = lr_init / lr
         schedulers.append(
             lr_scheduler.LinearLR(
                 optimizer,
-                start_factor=1 / warm_up_steps,
+                start_factor=start_factor,
                 end_factor=1.0,
                 total_iters=warm_up_steps - 1,
             ),
