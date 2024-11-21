@@ -2,12 +2,10 @@ import copy
 import os
 from collections import defaultdict
 from dataclasses import asdict
-from fnmatch import fnmatchcase
 from functools import partial
 
 import torch
 import torch.distributed as dist
-from natsort import natsorted
 from safetensors.torch import load_model
 from torch import Tensor
 from torch.nn.parallel import DistributedDataParallel as DDP
@@ -58,33 +56,50 @@ class SaeTrainer:
         dl: DataLoader,
         model: PreTrainedModel,
     ):
-        if cfg.hookpoints:
-            assert not cfg.layers, "Cannot specify both `hookpoints` and `layers`."
-
-            # Replace wildcard patterns
-            raw_hookpoints = []
-            for name, _ in model.named_modules():
-                if any(fnmatchcase(name, pat) for pat in cfg.hookpoints):
-                    raw_hookpoints.append(name)
-
-            # Natural sort to impose a consistent order
-            cfg.hookpoints = natsorted(raw_hookpoints)
+        if cfg.distribute_modules:
+            raise ValueError(
+                "Distributing modules is not supported in `SaeTrainer` with clusters. "
+                "Please set `distribute_modules=False`."
+            )
+        if cfg.hookpoints or cfg.layers:
+            raise ValueError(
+                "The `hookpoints` and `layers` parameters "
+                "are not supported in `SaeTrainer` with clusters. "
+                "Please use the `clusters` parameter instead."
+            )
         else:
             # If no layers are specified, train on all of them
-            if not cfg.layers:
-                N = model.config.num_hidden_layers
+            if cfg.clusters is not None:
+                N = max(max(cluster) for cluster in cfg.clusters.values())
                 cfg.layers = list(range(0, N, cfg.layer_stride))
+            else:
+                raise ValueError(
+                    "No clusters specified. " "Please specify the `clusters` parameter."
+                )
 
             # Now convert layers to hookpoints
             layers_name, _ = get_layer_list(model)
             cfg.hookpoints = [f"{layers_name}.{i}" for i in cfg.layers]
+            cfg.cluster_hookpoints = {
+                cluster_name: [f"{layers_name}.{i}" for i in layers]
+                for cluster_name, layers in cfg.clusters.items()
+            }
 
         # Distribute modules
         self.cfg = cfg
         self.distribute_modules()
-        N = len(cfg.hookpoints)
         device = model.device
         input_widths = resolve_widths(cfg, model, cfg.hookpoints, dl=dl)
+        cluster_widths = {}
+        for cluster_name in cfg.clusters:
+            cluster_widths[cluster_name] = [
+                input_widths[hook] for hook in cfg.cluster_hookpoints[cluster_name]
+            ]
+            if len(set(cluster_widths[cluster_name])) != 1:
+                raise ValueError(
+                    f"Cluster {cluster_name} has different input widths: "
+                    f"{cluster_widths[cluster_name]}"
+                )
         unique_widths = set(input_widths.values())
         if cfg.distribute_modules and len(unique_widths) > 1:
             # dist.all_to_all requires tensors to have the same shape across ranks
@@ -94,7 +109,8 @@ class SaeTrainer:
             )
         self.model = model
         self.saes = {
-            hook: Sae(input_widths[hook], cfg.sae, device) for hook in self.local_hookpoints()
+            cluster_name: Sae(cluster_widths[cluster_name][0], cfg.sae, device)
+            for cluster_name in cfg.cluster_hookpoints
         }
 
         # Dataloader
@@ -326,13 +342,21 @@ class SaeTrainer:
             if self.cfg.distribute_modules:
                 hidden_dict = self.scatter_hiddens(hidden_dict)
 
+            # Normalize the activations
+            if self.cfg.normalize_activations:
+                with torch.no_grad():
+                    for name, activations in hidden_dict.items():
+                        hidden_dict[name] = activations / self.scaling_factors[name]
+
             # For every cluster of layers, sample one activation per layer
+            cluster_activations_dict = {}
             if self.cfg.clusters is not None:
                 # Collect the activations for each layer in a single tensor
                 activattion_by_layer = torch.stack(
                     [hidden_dict[hook] for hook in self.local_hookpoints()], dim=1
                 )  # B x L x D
                 B, L, D = activattion_by_layer.shape
+
                 for cluster_name, cluster in self.cfg.clusters.items():
                     cluster_activations = activattion_by_layer[:, cluster, :]  # B x C x D
                     indices = (
@@ -340,9 +364,12 @@ class SaeTrainer:
                         .view(-1, 1, 1)
                         .expand(B, 1, D)
                     )
-                    torch.gather(cluster_activations, 1, indices)
+                    sampled_cluster_activations = torch.gather(
+                        cluster_activations, 1, indices
+                    )  # B x 1 x D
+                    cluster_activations_dict[cluster_name] = sampled_cluster_activations
 
-            for name, hiddens in hidden_dict.items():
+            for name, hiddens in cluster_activations_dict.items():
                 raw = self.saes[name]  # 'raw' never has a DDP wrapper
 
                 # On the first iteration, initialize the decoder bias
@@ -371,11 +398,6 @@ class SaeTrainer:
                 # Make sure the W_dec is still unit-norm
                 if raw.cfg.normalize_decoder:
                     raw.set_decoder_norm_to_unit_norm()
-
-                # Normalize the activations
-                if self.cfg.normalize_activations:
-                    with torch.no_grad():
-                        hiddens = hiddens * self.scaling_factors[name]
 
                 # Save the running mean of the L2 norm of the activations
                 l2_norm = hiddens.norm(p=2, dim=-1).mean()
@@ -613,7 +635,7 @@ class SaeTrainer:
     def save(self):
         """Save the SAEs to disk."""
 
-        path = self.cfg.run_name or "sae-ckpts"
+        path = self.cfg.run_name or "checkpoints/sae-ckpts"
         path = f"{path}/step_{self.global_step}"
         rank_zero = not dist.is_initialized() or dist.get_rank() == 0
         if rank_zero:

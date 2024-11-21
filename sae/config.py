@@ -133,10 +133,13 @@ class TrainConfig(Serializable):
     clusters: dict[str, list[int]] | None = None
     """Dictionary of clusters of layers to train SAEs on."""
 
+    cluster_hookpoints: dict[str, list[str]] | None = None
+    """List of hookpoints to train SAEs on."""
+
     hook: Callable[
         [nn.Module, Tuple[Any, ...], Any, Dict[nn.Module, str], Dict[str, Tensor]],
         Optional[Any],
-    ] = standard_hook
+    ] | None = standard_hook
     """The hook function to be used to collect model activations"""
 
     log_to_wandb: bool = True
