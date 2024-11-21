@@ -334,7 +334,9 @@ class Sae(nn.Module):
         if self.cfg.k <= 0:
             if self.jumprelu:
                 threshold = torch.exp(self.log_threshold)
-                sparsity_loss = torch.sum(Step.apply(pre_acts, threshold, self.bandwidth), dim=-1).mean()  # type: ignore
+                sparsity_loss = torch.sum(
+                    Step.apply(pre_acts, threshold, self.bandwidth), dim=-1
+                ).mean()  # type: ignore
             elif self.W_dec is not None:
                 # Scale features by the norm of their directions
                 weighted_feature_acts = feature_acts * self.W_dec.norm(dim=1)

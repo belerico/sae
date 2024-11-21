@@ -2,18 +2,9 @@ from __future__ import annotations
 
 import os
 from functools import partial
-from typing import (
-    TYPE_CHECKING,
-    Any,
-    Dict,
-    Iterable,
-    Type,
-    TypeVar,
-    cast,
-)
+from typing import TYPE_CHECKING, Any, Dict, Iterable, Type, TypeVar, cast
 
 import torch
-import torch.distributed as dist
 import torch.optim as optim
 import torch.optim.lr_scheduler as lr_scheduler
 from accelerate.utils import send_to_device
@@ -47,14 +38,17 @@ def get_lr_scheduler(
     transformers: https://huggingface.co/docs/transformers/main_classes/optimizer_schedules
 
     Args:
-        scheduler_name (str): Name of the scheduler to use, one of "constant", "cosineannealing", "cosineannealingwarmrestarts"
+        scheduler_name (str): Name of the scheduler to use, one of
+            "constant", "cosineannealing", "cosineannealingwarmrestarts"
         optimizer (optim.Optimizer): Optimizer to use
         training_steps (int): Total number of training steps
         warm_up_steps (int, optional): Number of linear warm up steps. Defaults to 0.
         decay_steps (int, optional): Number of linear decay steps to 0. Defaults to 0.
-        num_cycles (int, optional): Number of cycles for cosine annealing with warm restarts. Defaults to 1.
+        num_cycles (int, optional): Number of cycles for cosine annealing with warm restarts.
+            Defaults to 1.
         lr_end (float, optional): Final learning rate multiplier before decay. Defaults to 0.0.
-        lr_init (float, optional): Initial learning rate. Defaults to 0.0. If None, it is set to 1 / warm_up_steps.
+        lr_init (float, optional): Initial learning rate use to compute the scaler.
+            If None, the scaler is set to 1 / warm_up_steps.
     """
     if scheduler_name.lower() not in {
         "constant",
@@ -99,7 +93,8 @@ def get_lr_scheduler(
     if decay_steps > 0:
         if lr_end == 0.0:
             raise ValueError(
-                "Cannot have decay_steps with lr_end=0.0, this would decay from 0 to 0 and be a waste."
+                "Cannot have decay_steps with lr_end=0.0, "
+                "this would decay from 0 to 0 and be a waste."
             )
         schedulers.append(
             lr_scheduler.LinearLR(
@@ -152,14 +147,12 @@ def _get_main_lr_scheduler(
 
 
 class L1Scheduler:
-
     def __init__(
         self,
         l1_warmup_steps: float,
         total_steps: int,
         final_l1_coefficient: float,
     ):
-
         self.l1_warmup_steps = l1_warmup_steps
         # assume using warm-up
         if self.l1_warmup_steps != 0:

@@ -68,7 +68,7 @@ if __name__ == "__main__":
     total_tokens = 1_000_000_000
     max_seq_len = 1024
     batch_size = 2
- 
+
     dataset = load_dataset(
         "roneneldan/TinyStories",
         split="train",

@@ -1,10 +1,9 @@
 import torch
 from datasets import load_dataset
 from torch.utils.data import DataLoader
-from transformers import AutoModel, AutoTokenizer, DataCollatorWithPadding
+from transformers import AutoModel
 
 from sae import SaeConfig, SaeTrainer, TrainConfig
-from sae.data import chunk_and_tokenize, chunk_and_tokenize_streaming
 
 if __name__ == "__main__":
     model_name = "EleutherAI/pythia-160m-deduped"

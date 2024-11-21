@@ -159,7 +159,8 @@ class SaeTrainer:
         if self.cfg.sae.k <= 0:
             if not (0 <= cfg.l1_warmup_steps <= 1):
                 raise ValueError(
-                    f"`l1_warmup_steps` must be a float between 0 and 1. Given: {cfg.lr_decay_steps}"
+                    "`l1_warmup_steps` must be a float between 0 and 1. "
+                    f"Given: {cfg.lr_decay_steps}"
                 )
             l1_warmup_steps = int(cfg.l1_warmup_steps * self.training_steps)
             self.l1_scheduler = L1Scheduler(
