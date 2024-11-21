@@ -101,7 +101,7 @@ class JumpReLU(torch.autograd.Function):
         bandwidth = ctx.bandwidth
         x_grad = (x > threshold) * grad_output  # We don't apply STE to x input
         threshold_grad = torch.sum(
-            -(threshold / bandwidth) * rectangle((x - threshold) / bandwidth) * grad_output,
+            -(x / bandwidth) * rectangle((x - threshold) / bandwidth) * grad_output,
             dim=0,
         )
         return x_grad, threshold_grad, None
@@ -137,7 +137,7 @@ class Sae(nn.Module):
         )
         self.b_dec = nn.Parameter(torch.zeros(d_in, dtype=dtype, device=device))
 
-        if cfg.init_enc_as_dec_transpose:
+        if self.W_dec is not None and cfg.init_enc_as_dec_transpose:
             self.encoder.weight.data = self.W_dec.data.clone()
 
         if decoder and self.cfg.normalize_decoder:
