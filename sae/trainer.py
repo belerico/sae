@@ -385,9 +385,9 @@ class SaeTrainer:
                     else:
                         recon_loss = out.fvu
                     if self.cfg.sae.k <= 0:
-                        current_l1_coefficient = 0.0
-                    else:
                         current_l1_coefficient = self.l1_scheduler.current_l1_coefficient
+                    else:
+                        current_l1_coefficient = 0.0
 
                     loss = (
                         recon_loss
