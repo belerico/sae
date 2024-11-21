@@ -130,6 +130,9 @@ class TrainConfig(Serializable):
     num_norm_estimation_tokens: int = 1_000_000
     """Number of tokens to use for estimating the normalization factor."""
 
+    clusters: dict[str, list[int]] | None = None
+    """Dictionary of clusters of layers to train SAEs on."""
+
     hook: Callable[
         [nn.Module, Tuple[Any, ...], Any, Dict[nn.Module, str], Dict[str, Tensor]],
         Optional[Any],
