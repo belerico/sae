@@ -37,6 +37,9 @@ class SaeConfig(Serializable):
     jumprelu_bandwidth: float = 0.001
     """JumpReLU bandwidth"""
 
+    jumprelu_target_l0: float | None = None
+    """JumpReLU target L0"""
+
     init_enc_as_dec_transpose: bool = False
     """Whether to initialize the encoder matrix as the decoder transpose"""
 

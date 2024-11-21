@@ -385,13 +385,17 @@ class SaeTrainer:
                     else:
                         recon_loss = out.fvu
                     if self.cfg.sae.k <= 0:
-                        current_l1_coefficient = self.l1_scheduler.current_l1_coefficient
+                        if self.cfg.sae.jumprelu and self.cfg.sae.jumprelu_target_l0 is not None:
+                            l0 = (out.l1_loss / self.cfg.sae.jumprelu_target_l0 - 1) ** 2
+                        else:
+                            l0 = out.l1_loss
+                        sparsity_loss = self.l1_scheduler.current_l1_coefficient * l0
                     else:
-                        current_l1_coefficient = 0.0
+                        sparsity_loss = 0.0
 
                     loss = (
                         recon_loss
-                        + current_l1_coefficient * out.l1_loss
+                        + sparsity_loss
                         + self.cfg.auxk_alpha * out.auxk_loss
                         + out.multi_topk_fvu / 8
                     )
