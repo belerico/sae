@@ -101,7 +101,7 @@ class JumpReLU(torch.autograd.Function):
         bandwidth = ctx.bandwidth
         x_grad = (x > threshold) * grad_output  # We don't apply STE to x input
         threshold_grad = torch.sum(
-            -(x / bandwidth) * rectangle((x - threshold) / bandwidth) * grad_output,
+            -(threshold / bandwidth) * rectangle((x - threshold) / bandwidth) * grad_output,
             dim=0,
         )
         return x_grad, threshold_grad, None
