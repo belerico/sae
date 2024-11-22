@@ -25,31 +25,7 @@ from .utils import (
     resolve_widths,
 )
 
-# What i need?
-# - Define the number of cluster from config
-#   - Maybe is better for the user (but also for us) to specify how the layers cluster into groups
-#   - A mapping should suffice: {0: (0,1,2), 1: (3,4,5), 2: (6,7)}
-# - Then we need to:
-#   - Create as much SAEs as there are groups
-#   - Divide the number of total training tokens per group by the number of layers in the group
-#     - Say we normally train 1B tokens for a single layer, if we have l layers in a cluster,
-#       then for that particular
-#       cluster we train for 1B/l tokens
-#   - Sample one activations per layer in a group. As discussed we can sample like this:
-#     Suppose that we have 3 layers in a group (1,2,3),
-#     then we cache the activations for the 3 layers in 3xBxLxD --> 3x(B*L)xD
-#     Then we can sample activations like this:
-#     l-1 l-2 l-3
-#     1   0   0
-#     0   1   0
-#     1   0   0
-#     ...
-#     0   0   1
-#     0   1   0
-#     In this way we can sample exactly B*L tokens in total for the 3 layers
-
-
-class SaeTrainer:
+class ClusterSaeTrainer:
     def __init__(
         self,
         cfg: TrainConfig,
