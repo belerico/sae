@@ -25,6 +25,7 @@ from .utils import (
     resolve_widths,
 )
 
+
 class ClusterSaeTrainer:
     def __init__(
         self,
@@ -46,7 +47,7 @@ class ClusterSaeTrainer:
         else:
             # If no layers are specified, train on all of them
             if cfg.clusters is not None:
-                N = max(max(cluster) for cluster in cfg.clusters.values())
+                N = max(max(cluster) for cluster in cfg.clusters.values()) + 1
                 cfg.layers = list(range(0, N, cfg.layer_stride))
             else:
                 raise ValueError(
@@ -276,7 +277,6 @@ class ClusterSaeTrainer:
         avg_fvu = defaultdict(float)
         avg_auxk_loss = defaultdict(float)
         avg_multi_topk_fvu = defaultdict(float)
-        avg_act_norm = defaultdict(float)
         running_mean_act_norm = {}
 
         # Function to update the running mean
@@ -322,7 +322,17 @@ class ClusterSaeTrainer:
             if self.cfg.normalize_activations:
                 with torch.no_grad():
                     for name, activations in hidden_dict.items():
-                        hidden_dict[name] = activations / self.scaling_factors[name]
+                        hidden_dict[name] = activations * self.scaling_factors[name]
+
+            # Save the running mean of the L2 norm of the activations
+            for name, hiddens in hidden_dict.items():
+                l2_norm = hiddens.norm(p=2, dim=-1).mean()
+                if name not in running_mean_act_norm:
+                    running_mean_act_norm[name] = l2_norm
+                else:
+                    running_mean_act_norm[name] = update_running_mean(
+                        running_mean_act_norm[name], l2_norm, batch_idx + 1
+                    )
 
             # For every cluster of layers, sample one activation per layer
             cluster_activations_dict = {}
@@ -374,15 +384,6 @@ class ClusterSaeTrainer:
                 # Make sure the W_dec is still unit-norm
                 if raw.cfg.normalize_decoder:
                     raw.set_decoder_norm_to_unit_norm()
-
-                # Save the running mean of the L2 norm of the activations
-                l2_norm = hiddens.norm(p=2, dim=-1).mean()
-                if name not in running_mean_act_norm:
-                    running_mean_act_norm[name] = l2_norm
-                else:
-                    running_mean_act_norm[name] = update_running_mean(
-                        running_mean_act_norm[name], l2_norm, batch_idx + 1
-                    )
 
                 acc_steps = self.cfg.grad_acc_steps * self.cfg.micro_acc_steps
                 denom = acc_steps * self.cfg.wandb_log_frequency
@@ -501,12 +502,9 @@ class ClusterSaeTrainer:
                             info[f"multi_topk_fvu/{name}"] = avg_multi_topk_fvu[name]
 
                     info.update(
-                        {f"norm/avg_act_norm_{name}": avg_act_norm[name] for name in self.saes}
-                    )
-                    info.update(
                         {
                             f"norm/running_mean_act_norm_{name}": running_mean_act_norm[name]
-                            for name in self.saes
+                            for name in self.cfg.hookpoints
                         }
                     )
 
@@ -516,7 +514,6 @@ class ClusterSaeTrainer:
                     avg_l0.clear()
                     avg_l2.clear()
                     avg_multi_topk_fvu.clear()
-                    avg_act_norm.clear()
 
                     if self.cfg.distribute_modules:
                         outputs = [{} for _ in range(dist.get_world_size())]
