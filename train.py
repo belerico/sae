@@ -7,9 +7,9 @@ from sae import SaeConfig, SaeTrainer, TrainConfig
 
 if __name__ == "__main__":
     model_name = "EleutherAI/pythia-160m-deduped"
-    l1_coefficient = 5e-3
+    l1_coefficient = 3e-4
     max_seq_len = 1024
-    target_l0 = 64
+    target_l0 = None
     batch_size = 4
     lr = 7e-4
 
@@ -55,16 +55,16 @@ if __name__ == "__main__":
             init_enc_as_dec_transpose=True,
         ),
         batch_size=batch_size,
-        save_every=25_000,
-        layers=[3],
+        save_every=50_000,
+        layers=list(range(12)),
         lr=lr,
         lr_init=lr/10,
         lr_end=lr/10,
         lr_scheduler_name="constant",
-        lr_warmup_steps=0.05,
-        lr_decay_steps=0.95,
+        lr_warmup_steps=0.01,
+        lr_decay_steps=0.2,
         l1_coefficient=l1_coefficient,
-        l1_warmup_steps=0.1,
+        l1_warmup_steps=0.05,
         max_seq_len=max_seq_len,
         use_l2_loss=True,
         cycle_iterator=True,

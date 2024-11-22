@@ -109,10 +109,10 @@ class TrainConfig(Serializable):
     dead_feature_threshold: int = 10_000_000
     """Number of tokens after which a feature is considered dead."""
 
-    hookpoints: list[str] = list_field()
+    hookpoints: list[str] | None = list_field()
     """List of hookpoints to train SAEs on."""
 
-    layers: list[int] = list_field()
+    layers: list[int] | None = list_field()
     """List of layer indices to train SAEs on."""
 
     layer_stride: int = 1
