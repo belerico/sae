@@ -43,6 +43,10 @@ class SaeConfig(Serializable):
     init_enc_as_dec_transpose: bool = False
     """Whether to initialize the encoder matrix as the decoder transpose"""
 
+    init_b_dec_as_zeros: bool = False
+    """Whether to initialize the decoder bias as zeros.
+    If False, it is initialized as the estimated geometric median."""
+
 
 @dataclass
 class TrainConfig(Serializable):
@@ -109,10 +113,10 @@ class TrainConfig(Serializable):
     dead_feature_threshold: int = 10_000_000
     """Number of tokens after which a feature is considered dead."""
 
-    hookpoints: list[str] = list_field()
+    hookpoints: list[str] | None = list_field()
     """List of hookpoints to train SAEs on."""
 
-    layers: list[int] = list_field()
+    layers: list[int] | None = list_field()
     """List of layer indices to train SAEs on."""
 
     layer_stride: int = 1
@@ -130,10 +134,16 @@ class TrainConfig(Serializable):
     num_norm_estimation_tokens: int = 1_000_000
     """Number of tokens to use for estimating the normalization factor."""
 
+    clusters: dict[str, list[int]] | None = None
+    """Dictionary of clusters of layers to train SAEs on."""
+
+    cluster_hookpoints: dict[str, list[str]] | None = None
+    """List of hookpoints to train SAEs on."""
+
     hook: Callable[
         [nn.Module, Tuple[Any, ...], Any, Dict[nn.Module, str], Dict[str, Tensor]],
         Optional[Any],
-    ] = standard_hook
+    ] | None = standard_hook
     """The hook function to be used to collect model activations"""
 
     log_to_wandb: bool = True

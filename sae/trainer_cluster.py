@@ -2,12 +2,10 @@ import copy
 import os
 from collections import defaultdict
 from dataclasses import asdict
-from fnmatch import fnmatchcase
 from functools import partial
 
 import torch
 import torch.distributed as dist
-from natsort import natsorted
 from safetensors.torch import load_model
 from torch import Tensor
 from torch.nn.parallel import DistributedDataParallel as DDP
@@ -28,40 +26,57 @@ from .utils import (
 )
 
 
-class SaeTrainer:
+class ClusterSaeTrainer:
     def __init__(
         self,
         cfg: TrainConfig,
         dl: DataLoader,
         model: PreTrainedModel,
     ):
-        if cfg.hookpoints:
-            assert not cfg.layers, "Cannot specify both `hookpoints` and `layers`."
-
-            # Replace wildcard patterns
-            raw_hookpoints = []
-            for name, _ in model.named_modules():
-                if any(fnmatchcase(name, pat) for pat in cfg.hookpoints):
-                    raw_hookpoints.append(name)
-
-            # Natural sort to impose a consistent order
-            cfg.hookpoints = natsorted(raw_hookpoints)
+        if cfg.distribute_modules:
+            raise ValueError(
+                "Distributing modules is not supported in `SaeTrainer` with clusters. "
+                "Please set `distribute_modules=False`."
+            )
+        if cfg.hookpoints or cfg.layers:
+            raise ValueError(
+                "The `hookpoints` and `layers` parameters "
+                "are not supported in `SaeTrainer` with clusters. "
+                "Please use the `clusters` parameter instead."
+            )
         else:
             # If no layers are specified, train on all of them
-            if not cfg.layers:
-                N = model.config.num_hidden_layers
+            if cfg.clusters is not None:
+                N = max(max(cluster) for cluster in cfg.clusters.values()) + 1
                 cfg.layers = list(range(0, N, cfg.layer_stride))
+            else:
+                raise ValueError(
+                    "No clusters specified. " "Please specify the `clusters` parameter."
+                )
 
             # Now convert layers to hookpoints
             layers_name, _ = get_layer_list(model)
             cfg.hookpoints = [f"{layers_name}.{i}" for i in cfg.layers]
+            cfg.cluster_hookpoints = {
+                cluster_name: [f"{layers_name}.{i}" for i in layers]
+                for cluster_name, layers in cfg.clusters.items()
+            }
 
         # Distribute modules
         self.cfg = cfg
         self.distribute_modules()
-        N = len(cfg.hookpoints)
         device = model.device
         input_widths = resolve_widths(cfg, model, cfg.hookpoints, dl=dl)
+        cluster_widths = {}
+        for cluster_name in cfg.clusters:
+            cluster_widths[cluster_name] = [
+                input_widths[hook] for hook in cfg.cluster_hookpoints[cluster_name]
+            ]
+            if len(set(cluster_widths[cluster_name])) != 1:
+                raise ValueError(
+                    f"Cluster {cluster_name} has different input widths: "
+                    f"{cluster_widths[cluster_name]}"
+                )
         unique_widths = set(input_widths.values())
         if cfg.distribute_modules and len(unique_widths) > 1:
             # dist.all_to_all requires tensors to have the same shape across ranks
@@ -71,7 +86,8 @@ class SaeTrainer:
             )
         self.model = model
         self.saes = {
-            hook: Sae(input_widths[hook], cfg.sae, device) for hook in self.local_hookpoints()
+            cluster_name: Sae(cluster_widths[cluster_name][0], cfg.sae, device)
+            for cluster_name in cfg.cluster_hookpoints
         }
 
         # Dataloader
@@ -261,7 +277,6 @@ class SaeTrainer:
         avg_fvu = defaultdict(float)
         avg_auxk_loss = defaultdict(float)
         avg_multi_topk_fvu = defaultdict(float)
-        avg_act_norm = defaultdict(float)
         running_mean_act_norm = {}
 
         # Function to update the running mean
@@ -319,7 +334,28 @@ class SaeTrainer:
                         running_mean_act_norm[name], l2_norm, batch_idx + 1
                     )
 
-            for name, hiddens in hidden_dict.items():
+            # For every cluster of layers, sample one activation per layer
+            cluster_activations_dict = {}
+            if self.cfg.clusters is not None:
+                # Collect the activations for each layer in a single tensor
+                activattion_by_layer = torch.stack(
+                    [hidden_dict[hook] for hook in self.local_hookpoints()], dim=1
+                )  # B x L x D
+                B, L, D = activattion_by_layer.shape
+
+                for cluster_name, cluster in self.cfg.clusters.items():
+                    cluster_activations = activattion_by_layer[:, cluster, :]  # B x C x D
+                    indices = (
+                        torch.randint(0, cluster_activations.shape[1], (B,), device=device)
+                        .view(-1, 1, 1)
+                        .expand(B, 1, D)
+                    )
+                    sampled_cluster_activations = torch.gather(
+                        cluster_activations, 1, indices
+                    )  # B x 1 x D
+                    cluster_activations_dict[cluster_name] = sampled_cluster_activations
+
+            for name, hiddens in cluster_activations_dict.items():
                 raw = self.saes[name]  # 'raw' never has a DDP wrapper
 
                 # On the first iteration, initialize the decoder bias
@@ -466,12 +502,9 @@ class SaeTrainer:
                             info[f"multi_topk_fvu/{name}"] = avg_multi_topk_fvu[name]
 
                     info.update(
-                        {f"norm/avg_act_norm_{name}": avg_act_norm[name] for name in self.saes}
-                    )
-                    info.update(
                         {
                             f"norm/running_mean_act_norm_{name}": running_mean_act_norm[name]
-                            for name in self.saes
+                            for name in self.cfg.hookpoints
                         }
                     )
 
@@ -481,7 +514,6 @@ class SaeTrainer:
                     avg_l0.clear()
                     avg_l2.clear()
                     avg_multi_topk_fvu.clear()
-                    avg_act_norm.clear()
 
                     if self.cfg.distribute_modules:
                         outputs = [{} for _ in range(dist.get_world_size())]
@@ -576,7 +608,7 @@ class SaeTrainer:
     def save(self):
         """Save the SAEs to disk."""
 
-        path = self.cfg.run_name or "sae-ckpts"
+        path = self.cfg.run_name or "checkpoints/sae-ckpts"
         path = f"{path}/step_{self.global_step}"
         rank_zero = not dist.is_initialized() or dist.get_rank() == 0
         if rank_zero:
