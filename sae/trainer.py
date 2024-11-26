@@ -393,7 +393,10 @@ class SaeTrainer:
                             l0 = (out.l1_loss / self.cfg.sae.jumprelu_target_l0 - 1) ** 2
                         else:
                             l0 = out.l1_loss
-                        sparsity_loss = self.l1_scheduler.current_l1_coefficient * l0
+                        if self.l1_scheduler is not None:
+                            sparsity_loss = self.l1_scheduler.current_l1_coefficient * l0
+                        else:
+                            sparsity_loss = l0
                     else:
                         sparsity_loss = 0.0
 
@@ -423,7 +426,7 @@ class SaeTrainer:
                 self.optimizer.step()
                 self.optimizer.zero_grad()
                 self.lr_scheduler.step()
-                if self.cfg.sae.k <= 0:
+                if self.l1_scheduler is not None:
                     self.l1_scheduler.step()
 
                 ###############
