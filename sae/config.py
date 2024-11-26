@@ -43,6 +43,10 @@ class SaeConfig(Serializable):
     init_enc_as_dec_transpose: bool = False
     """Whether to initialize the encoder matrix as the decoder transpose"""
 
+    init_b_dec_as_zeros: bool = False
+    """Whether to initialize the decoder bias as zeros.
+    If False, it is initialized as the estimated geometric median."""
+
 
 @dataclass
 class TrainConfig(Serializable):
