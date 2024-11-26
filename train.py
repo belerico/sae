@@ -71,8 +71,8 @@ if __name__ == "__main__":
         num_training_tokens=1_000_000_000,
         normalize_activations=1,
         num_norm_estimation_tokens=2_000_000,
-        run_name="checkpoints/pythia-160m-deduped-1024-lambda-{}-target-L0-{}-lr-{}".format(
-            l1_coefficient, target_l0, lr
+        run_name="checkpoints/{}-1024-lambda-{}-target-L0-{}-lr-{}".format(
+            model_name, l1_coefficient, target_l0, lr
         ),
         adam_betas=(0.0, 0.999),
         adam_epsilon=1e-8,

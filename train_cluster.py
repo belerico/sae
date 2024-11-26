@@ -3,7 +3,7 @@ from datasets import load_dataset
 from torch.utils.data import DataLoader
 from transformers import AutoModel
 
-from sae import SaeConfig, TrainConfig, ClusterSaeTrainer
+from sae import ClusterSaeTrainer, SaeConfig, TrainConfig
 
 if __name__ == "__main__":
     model_name = "EleutherAI/pythia-160m-deduped"
@@ -17,24 +17,24 @@ if __name__ == "__main__":
     clusters = {
         "k2": [[0, 1, 2, 3, 4, 5, 6], [7, 8, 9, 10]],
         "k3": [[0, 1, 2], [3, 4, 5, 6], [7, 8, 9, 10]],
-        "k4": [[0, 1, 2], [3, 4, 5, 6], [7, 8], [9,10]],
-        "k5": [[0, 1, 2], [3, 4], [5, 6], [7, 8], [9, 10]]
+        "k4": [[0, 1, 2], [3, 4, 5, 6], [7, 8], [9, 10]],
+        "k5": [[0, 1, 2], [3, 4], [5, 6], [7, 8], [9, 10]],
     }
     unique_clusters = {
         "k2": [[0, 1, 2, 3, 4, 5, 6], [7, 8, 9, 10]],
         "k3": [[0, 1, 2], [3, 4, 5, 6]],
-        "k4": [[7, 8], [9,10]],
-        "k5": [[3, 4], [5, 6]]
+        "k4": [[7, 8], [9, 10]],
+        "k5": [[3, 4], [5, 6]],
     }
     unique_cluster_flatten = {
         "k2-c0": [0, 1, 2, 3, 4, 5, 6],
         "k2-c1": [7, 8, 9, 10],
-        "k3-c0": [0, 1, 2], 
+        "k3-c0": [0, 1, 2],
         "k3-c1": [3, 4, 5, 6],
         "k4-c2": [7, 8],
         "k4-c3": [9, 10],
         "k5-c1": [3, 4],
-        "k5-c2": [5, 6]
+        "k5-c2": [5, 6],
     }
 
     # dataset = load_dataset(
@@ -83,8 +83,8 @@ if __name__ == "__main__":
         layers=None,
         hookpoints=None,
         lr=lr,
-        lr_init=lr/10,
-        lr_end=lr/10,
+        lr_init=lr / 10,
+        lr_end=lr / 10,
         lr_scheduler_name="constant",
         lr_warmup_steps=0.01,
         lr_decay_steps=0.2,
@@ -96,10 +96,12 @@ if __name__ == "__main__":
         num_training_tokens=1_000_000_000,
         normalize_activations=1,
         num_norm_estimation_tokens=2_000_000,
-        run_name="checkpoints-clusters/pythia-160m-deduped-1024-lambda-{}-target-L0-{}-lr-{}".format(l1_coefficient, target_l0, lr),
+        run_name="checkpoints-clusters/pythia-160m-deduped-1024-lambda-{}-target-L0-{}-lr-{}".format(
+            l1_coefficient, target_l0, lr
+        ),
         adam_betas=(0.0, 0.999),
         adam_epsilon=1e-8,
-        clusters=unique_cluster_flatten
+        clusters=unique_cluster_flatten,
     )
     trainer = ClusterSaeTrainer(cfg, data_loader, model)
     trainer.fit()
