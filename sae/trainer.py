@@ -307,7 +307,7 @@ class SaeTrainer:
                 raw = self.saes[name]  # 'raw' never has a DDP wrapper
 
                 # On the first iteration, initialize the decoder bias
-                if self.global_step == 0:
+                if self.global_step == 0 and not self.cfg.sae.init_b_dec_as_zeros:
                     # NOTE: The all-cat here could conceivably cause an OOM in some
                     # cases, but it's unlikely to be a problem with small world sizes.
                     # We could avoid this by "approximating" the geometric median
