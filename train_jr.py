@@ -13,6 +13,7 @@ if __name__ == "__main__":
     batch_size = 4
     lr = 7e-4
 
+    # Streaming dataset example
     # dataset = load_dataset(
     #     "allenai/c4",
     #     "en",
@@ -23,6 +24,7 @@ if __name__ == "__main__":
     # tokenizer = AutoTokenizer.from_pretrained(model_name)
     # tokenizer.pad_token = tokenizer.eos_token
     # dataset = chunk_and_tokenize_streaming(dataset, tokenizer, max_seq_len=max_seq_len)
+    
     dataset = load_dataset(
         "NeelNanda/pile-small-tokenized-2b",
         streaming=True,

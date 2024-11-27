@@ -156,6 +156,7 @@ class SaeTrainer:
         )
 
         # L1 coefficient scheduler
+        self.l1_scheduler = None
         if self.cfg.sae.k <= 0:
             if not (0 <= cfg.l1_warmup_steps <= 1):
                 raise ValueError(
@@ -392,7 +393,10 @@ class SaeTrainer:
                             l0 = (out.l1_loss / self.cfg.sae.jumprelu_target_l0 - 1) ** 2
                         else:
                             l0 = out.l1_loss
-                        sparsity_loss = self.l1_scheduler.current_l1_coefficient * l0
+                        if self.l1_scheduler is not None:
+                            sparsity_loss = self.l1_scheduler.current_l1_coefficient * l0
+                        else:
+                            sparsity_loss = l0
                     else:
                         sparsity_loss = 0.0
 
@@ -422,7 +426,7 @@ class SaeTrainer:
                 self.optimizer.step()
                 self.optimizer.zero_grad()
                 self.lr_scheduler.step()
-                if self.cfg.sae.k <= 0:
+                if self.l1_scheduler is not None:
                     self.l1_scheduler.step()
 
                 ###############
@@ -447,7 +451,11 @@ class SaeTrainer:
                             {
                                 f"fvu/{name}": avg_fvu[name],
                                 f"l1/{name}": avg_l1[name],
-                                "l1/l1_coefficient": self.l1_scheduler.current_l1_coefficient,
+                                "l1/l1_coefficient": (
+                                    self.l1_scheduler.current_l1_coefficient
+                                    if self.l1_scheduler is not None
+                                    else 0.0
+                                ),
                                 f"l0/{name}": avg_l0[name],
                                 f"l2/{name}": avg_l2[name],
                                 f"dead_pct/{name}": mask.mean(dtype=torch.float32).item(),
