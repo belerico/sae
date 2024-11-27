@@ -245,6 +245,9 @@ def assert_type(typ: Type[T], obj: Any) -> T:
 @torch.no_grad()
 def geometric_median(points: Tensor, max_iter: int = 100, tol: float = 1e-5):
     """Compute the geometric median `points`. Used for initializing decoder bias."""
+    # Get the machine epsilon for the data type
+    eps = torch.finfo(points.dtype).eps
+
     # Initialize our guess as the mean of the points
     guess = points.mean(dim=0)
     prev = torch.zeros_like(guess)
@@ -256,7 +259,7 @@ def geometric_median(points: Tensor, max_iter: int = 100, tol: float = 1e-5):
         prev = guess
 
         # Compute the weights
-        weights = 1 / torch.norm(points - guess, dim=1)
+        weights = 1 / torch.clamp(torch.norm(points - guess, dim=1), min=eps)
 
         # Normalize the weights
         weights /= weights.sum()
