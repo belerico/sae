@@ -5,8 +5,6 @@ from functools import partial
 from typing import TYPE_CHECKING, Any, Dict, Iterable, Type, TypeVar, cast
 
 import torch
-import torch.optim as optim
-import torch.optim.lr_scheduler as lr_scheduler
 from accelerate.utils import send_to_device
 from torch import Tensor, nn
 from torch.utils.data import DataLoader
@@ -18,98 +16,52 @@ if TYPE_CHECKING:
 T = TypeVar("T")
 
 
-#  Constant
-#  Cosine Annealing with Warmup
-#  Cosine Annealing with Warmup / Restarts
-#  No default values specified so the type-checker can verify we don't forget any arguments.
 def get_lr_scheduler(
     scheduler_name: str,
-    optimizer: optim.Optimizer,
-    training_steps: int,
-    lr: float,
-    warm_up_steps: int,
-    decay_steps: int,
-    lr_end: float,
-    num_cycles: int,
-    lr_init: float | None = None,
-) -> lr_scheduler.LRScheduler:
+    optimizer: torch.optim.Optimizer,
+    num_warmup_steps: int,
+    num_training_steps: int,
+) -> torch.optim.lr_scheduler.LambdaLR:
     """
-    Loosely based on this, seemed simpler write this than import
-    transformers: https://huggingface.co/docs/transformers/main_classes/optimizer_schedules
+    Get the learning rate scheduler from the Transformers library.
 
     Args:
         scheduler_name (str): Name of the scheduler to use, one of
-            "constant", "cosineannealing", "cosineannealingwarmrestarts"
-        optimizer (optim.Optimizer): Optimizer to use
-        training_steps (int): Total number of training steps
-        warm_up_steps (int, optional): Number of linear warm up steps. Defaults to 0.
-        decay_steps (int, optional): Number of linear decay steps to 0. Defaults to 0.
-        num_cycles (int, optional): Number of cycles for cosine annealing with warm restarts.
-            Defaults to 1.
-        lr_end (float, optional): Final learning rate multiplier before decay. Defaults to 0.0.
-        lr_init (float, optional): Initial learning rate use to compute the scaler.
-            If None, the scaler is set to 1 / warm_up_steps.
+            'constant', 'cosine', or 'linear'.
+        optimizer (torch.optim.Optimizer): The optimizer.
+        num_warmup_steps (int): Number of warmup steps.
+        num_training_steps (int): Total number of training steps.
+
+    Returns:
+        torch.optim.lr_scheduler.LambdaLR: The learning rate scheduler.
     """
-    if scheduler_name.lower() not in {
-        "constant",
-        "cosineannealing",
-        "cosineannealingwarmrestarts",
-    }:
+    from transformers import (
+        get_constant_schedule_with_warmup,
+        get_cosine_schedule_with_warmup,
+        get_linear_schedule_with_warmup,
+    )
+
+    scheduler_name = scheduler_name.lower()
+    if scheduler_name == "constant":
+        scheduler = get_constant_schedule_with_warmup(optimizer, num_warmup_steps=num_warmup_steps)
+    elif scheduler_name == "linear":
+        scheduler = get_linear_schedule_with_warmup(
+            optimizer,
+            num_warmup_steps=num_warmup_steps,
+            num_training_steps=num_training_steps,
+        )
+    elif scheduler_name == "cosine":
+        scheduler = get_cosine_schedule_with_warmup(
+            optimizer,
+            num_warmup_steps=num_warmup_steps,
+            num_training_steps=num_training_steps,
+        )
+    else:
         raise ValueError(
-            "`scheduler_name` must be one of `constant`, `cosineannealing`,"
-            "and `cosineannealingwarmrestarts`. "
-            f"Given: {scheduler_name.lower()}."
+            f"Unsupported scheduler: {scheduler_name}. "
+            "The supported schedulers are 'constant', 'linear', and 'cosine'."
         )
-    base_scheduler_steps = training_steps - warm_up_steps - decay_steps
-    norm_scheduler_name = scheduler_name.lower()
-    main_scheduler = _get_main_lr_scheduler(
-        norm_scheduler_name,
-        optimizer,
-        steps=base_scheduler_steps,
-        lr_end=lr_end,
-        num_cycles=num_cycles,
-    )
-    if norm_scheduler_name == "constant":
-        # constant scheduler ignores lr_end, so decay needs to start at lr
-        lr_end = lr
-    schedulers: list[lr_scheduler.LRScheduler] = []
-    milestones: list[int] = []
-    if warm_up_steps > 0:
-        # Warmup lr from lr_init to lr
-        if lr_init is None:
-            start_factor = 1 / warm_up_steps
-        else:
-            start_factor = lr_init / lr
-        schedulers.append(
-            lr_scheduler.LinearLR(
-                optimizer,
-                start_factor=start_factor,
-                end_factor=1.0,
-                total_iters=warm_up_steps - 1,
-            ),
-        )
-        milestones.append(warm_up_steps)
-    schedulers.append(main_scheduler)
-    if decay_steps > 0:
-        if lr_end == 0.0:
-            raise ValueError(
-                "Cannot have decay_steps with lr_end=0.0, "
-                "this would decay from 0 to 0 and be a waste."
-            )
-        schedulers.append(
-            lr_scheduler.LinearLR(
-                optimizer,
-                start_factor=lr_end / lr,
-                end_factor=0.0,
-                total_iters=decay_steps,
-            ),
-        )
-        milestones.append(training_steps - decay_steps)
-    return lr_scheduler.SequentialLR(
-        schedulers=schedulers,
-        optimizer=optimizer,
-        milestones=milestones,
-    )
+    return scheduler
 
 
 def standard_hook(
@@ -125,25 +77,6 @@ def standard_hook(
 
     name = module_to_name[module]
     hidden_dict[name] = outputs.flatten(0, 1)
-
-
-def _get_main_lr_scheduler(
-    scheduler_name: str,
-    optimizer: optim.Optimizer,
-    steps: int,
-    lr_end: float,
-    num_cycles: int,
-) -> lr_scheduler.LRScheduler:
-    if scheduler_name == "constant":
-        return lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda steps: 1.0)
-    elif scheduler_name == "cosineannealing":
-        return lr_scheduler.CosineAnnealingLR(optimizer, T_max=steps, eta_min=lr_end)  # type: ignore
-    elif scheduler_name == "cosineannealingwarmrestarts":
-        return lr_scheduler.CosineAnnealingWarmRestarts(
-            optimizer, T_0=steps // num_cycles, eta_min=lr_end  # type: ignore
-        )
-    else:
-        raise ValueError(f"Unsupported scheduler: {scheduler_name}")
 
 
 class L1Scheduler:

@@ -80,23 +80,14 @@ class TrainConfig(Serializable):
     adam_betas: tuple[float, float] = (0.0, 0.999)
     """Adam betas"""
 
-    lr: float | None = None
-    """Base LR. If None, it is automatically chosen based on the number of latents."""
-
-    lr_init: float | None = None
-    """Initial LR to use for the warm-up phase. If None, it is automatically set to `lr`"""
-
-    lr_end: float | None = None
-    """End LR. If None, it is automatically set to `lr / 10`"""
+    lr: dict[str, float] | float | None = None
+    """Base lr. If None, it is automatically chosen based on the number of latents."""
 
     lr_scheduler_name: str = "constant"
-    """LR scheduler name"""
+    """LR scheduler name. One of `constant`, `linear`, `cosine`."""
 
     lr_warmup_steps: float = 0.01
     """Percentage (in [0;1]) of total steps to warm-up the learning rate"""
-
-    lr_decay_steps: float = 0.0
-    """Percentage (in [0;1]) of total steps to decay the learning rate"""
 
     l1_coefficient: float = 0.0
     """Sparsity coefficient"""

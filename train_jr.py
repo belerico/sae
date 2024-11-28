@@ -24,7 +24,7 @@ if __name__ == "__main__":
     # tokenizer = AutoTokenizer.from_pretrained(model_name)
     # tokenizer.pad_token = tokenizer.eos_token
     # dataset = chunk_and_tokenize_streaming(dataset, tokenizer, max_seq_len=max_seq_len)
-    
+
     dataset = load_dataset(
         "NeelNanda/pile-small-tokenized-2b",
         streaming=True,
@@ -44,7 +44,7 @@ if __name__ == "__main__":
     )
     model = AutoModel.from_pretrained(
         model_name,
-        device_map={"": "cuda"},
+        device_map={"": "mps"},
         torch_dtype=torch.float32,
         trust_remote_code=True,
     )
@@ -60,11 +60,8 @@ if __name__ == "__main__":
         save_every=50_000,
         layers=list(range(12)),
         lr=lr,
-        lr_init=lr / 10,
-        lr_end=lr / 10,
-        lr_scheduler_name="constant",
+        lr_scheduler_name="cosine",
         lr_warmup_steps=0.01,
-        lr_decay_steps=0.2,
         l1_coefficient=l1_coefficient,
         l1_warmup_steps=0.05,
         max_seq_len=max_seq_len,

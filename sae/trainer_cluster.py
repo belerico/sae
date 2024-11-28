@@ -116,22 +116,51 @@ class ClusterSaeTrainer:
         }
 
         # Optimizer and schedulers (l1 coefficient and lr)
-        if cfg.lr is None:
-            cfg.lr = 2e-4 / (list(self.saes.values())[0].num_latents / (2**14)) ** 0.5
-        pgs = [
-            {
-                "params": sae.parameters(),
-                # Auto-select LR using 1 / sqrt(d) scaling law from Fig 3 of the paper
-                "lr": cfg.lr,
-            }
-            for sae in self.saes.values()
-        ]
+        # Handle different types of lr: dict, float, or None
+        self.lrs = {}
+        self.pgs = []
+        if isinstance(cfg.lr, dict):
+            # Ensure that the keys of lr match the keys of the SAEs
+            if set(cfg.lr.keys()) != set(cfg.hookpoints):
+                raise ValueError(
+                    "lr dict keys must match the hookpoints. "
+                    f"Expected: {cfg.hookpoints}, got: {cfg.lr.keys()}"
+                )
+            # Create parameter groups with individual learning rates
+            for hook, sae in self.saes.items():
+                lr = cfg.lr[hook]
+                self.pgs.append(
+                    {
+                        "params": sae.parameters(),
+                        "lr": lr,
+                    }
+                )
+                self.lrs[hook] = lr
+        else:
+            for hook, sae in self.saes.items():
+                if cfg.lr is not None:
+                    lr = cfg.lr
+                else:
+                    num_latents = sae.num_latents
+                    # Compute default lr based on num_latents
+                    lr = 2e-4 / (num_latents / (2**14)) ** 0.5
+                self.pgs.append(
+                    {
+                        "params": sae.parameters(),
+                        "lr": lr,
+                    }
+                )
+                self.lrs[hook] = lr
 
-        # Dedup the learning rates we're using, sort them, round to 2 decimal places
-        lrs = [f"{lr:.2e}" for lr in sorted(set(pg["lr"] for pg in pgs))]
-        print(f"Learning rates: {lrs}" if len(lrs) > 1 else f"Learning rate: {lrs[0]}")
+        # Deduplicate and sort the learning rates for logging
+        lrs_set = sorted(set(self.lrs.values()))
+        lrs_formatted = [f"{lr:.2e}" for lr in lrs_set]
+        if len(lrs_set) > 1:
+            print(f"Learning rates: {lrs_formatted}")
+        else:
+            print(f"Learning rate: {lrs_formatted[0]}")
 
-        # Import correct Adam optimizer
+        # Initialize the optimizer
         if cfg.adam_8bit:
             try:
                 from bitsandbytes.optim import Adam8bit as Adam
@@ -144,31 +173,20 @@ class ClusterSaeTrainer:
                 print("Run `pip install bitsandbytes` for less memory usage.")
         else:
             from torch.optim import Adam
-        self.optimizer = Adam(pgs, betas=cfg.adam_betas, eps=cfg.adam_epsilon)
+        self.optimizer = Adam(self.pgs, betas=cfg.adam_betas, eps=cfg.adam_epsilon)
 
-        # LR scheduler
-        if not (0 <= cfg.lr_decay_steps <= 1):
-            raise ValueError(
-                f"`lr_decay_steps` must be a float between 0 and 1. Given: {cfg.lr_decay_steps}"
-            )
+        # LR scheduler setup
         if not (0 <= cfg.lr_warmup_steps <= 1):
             raise ValueError(
-                f"`lr_warmup_steps` must be a float between 0 and 1. Given: {cfg.lr_decay_steps}"
+                "`lr_warmup_steps` must be a float between 0 and 1. "
+                f"Given: {cfg.lr_warmup_steps}"
             )
-        lr_decay_steps = int(cfg.lr_decay_steps * self.training_steps)
         lr_warmup_steps = int(cfg.lr_warmup_steps * self.training_steps)
-        if cfg.lr_end is None:
-            cfg.lr_end = cfg.lr / 10
         self.lr_scheduler = get_lr_scheduler(
             cfg.lr_scheduler_name,
             optimizer=self.optimizer,
-            training_steps=self.training_steps,
-            lr=cfg.lr,
-            warm_up_steps=lr_warmup_steps,
-            decay_steps=lr_decay_steps,
-            lr_end=cfg.lr_end,
-            num_cycles=1,
-            lr_init=cfg.lr_init,
+            num_warmup_steps=lr_warmup_steps,
+            num_training_steps=self.training_steps,
         )
 
         # L1 coefficient scheduler
@@ -177,7 +195,7 @@ class ClusterSaeTrainer:
             if not (0 <= cfg.l1_warmup_steps <= 1):
                 raise ValueError(
                     "`l1_warmup_steps` must be a float between 0 and 1. "
-                    f"Given: {cfg.lr_decay_steps}"
+                    f"Given: {cfg.l1_warmup_steps}"
                 )
             l1_warmup_steps = int(cfg.l1_warmup_steps * self.training_steps)
             self.l1_scheduler = L1Scheduler(
@@ -462,7 +480,7 @@ class ClusterSaeTrainer:
                 self.optimizer.step()
                 self.optimizer.zero_grad()
                 self.lr_scheduler.step()
-                if self.cfg.sae.k <= 0:
+                if self.l1_scheduler is not None and self.cfg.sae.k <= 0:
                     self.l1_scheduler.step()
 
                 ###############
@@ -640,7 +658,7 @@ class ClusterSaeTrainer:
                 },
                 f"{path}/state.pt",
             )
-            if self.cfg.sae.k <= 0:
+            if self.l1_scheduler is not None and self.cfg.sae.k <= 0:
                 torch.save(self.l1_scheduler.state_dict(), f"{path}/l1_scheduler.pt")
             if self.cfg.normalize_activations:
                 torch.save(self.scaling_factors, f"{path}/scaling_factors.pt")
