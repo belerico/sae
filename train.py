@@ -8,9 +8,9 @@ from sae import SaeConfig, SaeTrainer, TrainConfig
 if __name__ == "__main__":
     model_name = "EleutherAI/pythia-160m-deduped"
     l1_coefficient = 5e-3
-    max_seq_len = 1024
+    max_seq_len = 512
     target_l0 = 64
-    batch_size = 4
+    batch_size = 1
     lr = 7e-4
 
     # dataset = load_dataset(
@@ -42,7 +42,7 @@ if __name__ == "__main__":
     )
     model = AutoModel.from_pretrained(
         model_name,
-        device_map={"": "cuda"},
+        device_map={"": "mps"},
         torch_dtype=torch.float32,
         trust_remote_code=True,
     )
@@ -58,11 +58,8 @@ if __name__ == "__main__":
         save_every=25_000,
         layers=[3],
         lr=lr,
-        lr_init=lr / 10,
-        lr_end=lr / 10,
-        lr_scheduler_name="constant",
-        lr_warmup_steps=0.05,
-        lr_decay_steps=0.95,
+        lr_scheduler_name="cosine",
+        lr_warmup_steps=0.01,
         l1_coefficient=l1_coefficient,
         l1_warmup_steps=0.1,
         max_seq_len=max_seq_len,
