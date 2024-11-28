@@ -118,6 +118,9 @@ class Sae(nn.Module):
         decoder: bool = True,
     ):
         super().__init__()
+        if cfg.k > 0 and cfg.jumprelu:
+            raise ValueError("JumpReLU is only supported for k <= 0.")
+
         self.cfg = cfg
         self.d_in = d_in
         self.num_latents = cfg.num_latents or d_in * cfg.expansion_factor
