@@ -7,7 +7,7 @@ from sae import ClusterSaeTrainer, SaeConfig, TrainConfig
 
 if __name__ == "__main__":
     model_name = "EleutherAI/pythia-160m-deduped"
-    l1_coefficient = 0.5
+    l1_coefficient = 1
     max_seq_len = 1024
     target_l0 = 128
     batch_size = 128

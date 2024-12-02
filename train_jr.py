@@ -7,7 +7,7 @@ from sae import SaeConfig, SaeTrainer, TrainConfig
 
 if __name__ == "__main__":
     model_name = "EleutherAI/pythia-160m-deduped"
-    l1_coefficient = 0.5
+    l1_coefficient = 1
     max_seq_len = 1024
     target_l0 = 128
     batch_size = 128
@@ -75,6 +75,7 @@ if __name__ == "__main__":
         ),
         adam_betas=(0.0, 0.999),
         adam_epsilon=1e-8,
+        micro_acc_steps=4
     )
     trainer = SaeTrainer(cfg, data_loader, model)
     trainer.fit()
