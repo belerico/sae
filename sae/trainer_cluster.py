@@ -239,7 +239,7 @@ class ClusterSaeTrainer:
         opt_state = torch.load(f"{path}/optimizer.pt", map_location=device, weights_only=True)
         self.optimizer.load_state_dict(opt_state)
         self.lr_scheduler.load_state_dict(lr_state)
-        if self.cfg.sae.k <= 0:
+        if self.l1_scheduler is not None and self.cfg.sae.k <= 0:
             l1_state = torch.load(
                 f"{path}/l1_scheduler.pt", map_location=device, weights_only=True
             )
