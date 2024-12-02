@@ -7,11 +7,11 @@ from sae import SaeConfig, SaeTrainer, TrainConfig
 
 if __name__ == "__main__":
     model_name = "EleutherAI/pythia-160m-deduped"
-    l1_coefficient = 3e-4
+    l1_coefficient = 0.5
     max_seq_len = 1024
-    target_l0 = None
+    target_l0 = 128
     batch_size = 4
-    lr = 7e-4
+    lr = 12e-4
 
     # Streaming dataset example
     # dataset = load_dataset(
@@ -70,7 +70,7 @@ if __name__ == "__main__":
         num_training_tokens=1_000_000_000,
         normalize_activations=1,
         num_norm_estimation_tokens=2_000_000,
-        run_name="checkpoints/{}-1024-lambda-{}-target-L0-{}-lr-{}".format(
+        run_name="checkpoints/{}-1024-jr-lambda-{}-target-L0-{}-lr-{}".format(
             model_name, l1_coefficient, target_l0, lr
         ),
         adam_betas=(0.0, 0.999),

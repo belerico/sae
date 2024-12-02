@@ -7,11 +7,11 @@ from sae import ClusterSaeTrainer, SaeConfig, TrainConfig
 
 if __name__ == "__main__":
     model_name = "EleutherAI/pythia-160m-deduped"
-    l1_coefficient = 3e-4
+    l1_coefficient = 0.5
     max_seq_len = 1024
-    target_l0 = None
+    target_l0 = 128
     batch_size = 4
-    lr = 7e-4
+    lr = 12e-4
 
     # Define pythia-160m-clusters
     clusters = {
@@ -89,17 +89,17 @@ if __name__ == "__main__":
         hookpoints=None,
         lr=lr,
         lr_scheduler_name="constant",
-        lr_warmup_steps=0.01,
+        lr_warmup_steps=0.0,
         l1_coefficient=l1_coefficient,
-        l1_warmup_steps=0.05,
+        l1_warmup_steps=0.0,
         max_seq_len=max_seq_len,
         use_l2_loss=True,
         cycle_iterator=True,
         num_training_tokens=1_000_000_000,
         normalize_activations=1,
         num_norm_estimation_tokens=2_000_000,
-        run_name="checkpoints-clusters/pythia-160m-deduped-1024-lambda-{}-target-L0-{}-lr-{}".format(
-            l1_coefficient, target_l0, lr
+        run_name="checkpoints-clusters/{}-1024-jr-lambda-{}-target-L0-{}-lr-{}".format(
+            model_name, l1_coefficient, target_l0, lr
         ),
         adam_betas=(0.0, 0.999),
         adam_epsilon=1e-8,
