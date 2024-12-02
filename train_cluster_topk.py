@@ -79,7 +79,7 @@ if __name__ == "__main__":
     cfg = TrainConfig(
         SaeConfig(
             expansion_factor=16,
-            k=128,
+            k=k,
             jumprelu=False,
             multi_topk=False,
             init_b_dec_as_zeros=False,
