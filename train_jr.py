@@ -7,10 +7,10 @@ from sae import SaeConfig, SaeTrainer, TrainConfig
 
 if __name__ == "__main__":
     model_name = "EleutherAI/pythia-160m-deduped"
-    l1_coefficient = 1
+    l1_coefficient = 0.5
     max_seq_len = 1024
     target_l0 = 128
-    batch_size = 128
+    batch_size = 4
     lr = 7e-4
 
     # Streaming dataset example
@@ -44,7 +44,7 @@ if __name__ == "__main__":
     )
     model = AutoModel.from_pretrained(
         model_name,
-        device_map={"": "mps"},
+        device_map={"": "cuda"},
         torch_dtype=torch.float32,
         trust_remote_code=True,
     )
@@ -57,13 +57,13 @@ if __name__ == "__main__":
             init_enc_as_dec_transpose=True,
         ),
         batch_size=batch_size,
-        save_every=1000,
+        save_every=10000,
         layers=list(range(12)),
         lr=lr,
         lr_scheduler_name="cosine",
         lr_warmup_steps=0.01,
         l1_coefficient=l1_coefficient,
-        l1_warmup_steps=0.05,
+        l1_warmup_steps=0.1,
         max_seq_len=max_seq_len,
         use_l2_loss=True,
         cycle_iterator=True,
@@ -75,7 +75,7 @@ if __name__ == "__main__":
         ),
         adam_betas=(0.0, 0.999),
         adam_epsilon=1e-8,
-        micro_acc_steps=4
+        micro_acc_steps=1
     )
     trainer = SaeTrainer(cfg, data_loader, model)
     trainer.fit()
