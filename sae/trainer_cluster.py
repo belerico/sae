@@ -354,21 +354,20 @@ class ClusterSaeTrainer:
                     )
 
             # For every cluster of layers, sample one activation per layer
+            cluster_layers_dict = {}
             cluster_activations_dict = {}
             if self.cfg.clusters is not None:
                 # Collect the activations for each layer in a single tensor
-                activattion_by_layer = torch.stack(
+                activations_by_layer = torch.stack(
                     [hidden_dict[hook] for hook in self.local_hookpoints()], dim=1
                 )  # B x L x D
-                B, L, D = activattion_by_layer.shape
+                B, L, D = activations_by_layer.shape
 
                 for cluster_name, cluster in self.cfg.clusters.items():
-                    cluster_activations = activattion_by_layer[:, cluster, :]  # B x C x D
-                    indices = (
-                        torch.randint(0, cluster_activations.shape[1], (B,), device=device)
-                        .view(-1, 1, 1)
-                        .expand(B, 1, D)
-                    )
+                    cluster_activations = activations_by_layer[:, cluster, :]  # B x C x D
+                    indices = torch.randint(0, cluster_activations.shape[1], (B,), device=device)
+                    cluster_layers_dict[cluster_name] = indices + min(cluster)
+                    indices = indices.view(-1, 1, 1).expand(B, 1, D)
                     sampled_cluster_activations = torch.gather(
                         cluster_activations, 1, indices
                     )  # B x 1 x D
@@ -436,7 +435,9 @@ class ClusterSaeTrainer:
                             self.maybe_all_reduce(out.multi_topk_fvu.detach()) / denom
                         )
                     if self.cfg.sae.k <= 0:
-                        avg_l1[name] += float(self.maybe_all_reduce(out.l1_loss.detach()) / denom)
+                        avg_l1[name] += float(
+                            self.maybe_all_reduce(out.l1_loss.mean().detach()) / denom
+                        )
 
                     if self.cfg.use_l2_loss:
                         recon_loss = out.l2_loss
@@ -444,7 +445,20 @@ class ClusterSaeTrainer:
                         recon_loss = out.fvu
                     if self.cfg.sae.k <= 0:
                         if self.cfg.sae.jumprelu and self.cfg.sae.jumprelu_target_l0 is not None:
-                            l0 = (out.l1_loss / self.cfg.sae.jumprelu_target_l0 - 1) ** 2
+                            if self.cfg.sae.jumprelu_per_layer_l0:
+                                l0 = torch.zeros(1, device=device, dtype=torch.float32)
+                                for layer in self.cfg.clusters[name]:
+                                    l0 += (
+                                        (
+                                            out.l1_loss[layer == cluster_layers_dict[name]]
+                                            / self.cfg.sae.jumprelu_target_l0
+                                            - 1
+                                        )
+                                        ** 2
+                                    ).mean()
+                                l0 /= len(self.cfg.clusters[name])
+                            else:
+                                l0 = (out.l1_loss / self.cfg.sae.jumprelu_target_l0 - 1) ** 2
                         else:
                             l0 = out.l1_loss
                         if self.l1_scheduler is not None:

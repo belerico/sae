@@ -40,6 +40,10 @@ class SaeConfig(Serializable):
     jumprelu_target_l0: float | None = None
     """JumpReLU target L0"""
 
+    jumprelu_per_layer_l0: bool = False
+    """Whether to use a per-layer L1 loss. Only valid when training Cluster-SAEs and a
+    JumpReLU target L0/L1 is set."""
+
     init_enc_as_dec_transpose: bool = False
     """Whether to initialize the encoder matrix as the decoder transpose"""
 
