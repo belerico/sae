@@ -449,13 +449,10 @@ class ClusterSaeTrainer:
                                 l0 = torch.zeros(1, device=device, dtype=torch.float32)
                                 for layer in self.cfg.clusters[name]:
                                     l0 += (
-                                        (
-                                            out.l1_loss[layer == cluster_layers_dict[name]]
-                                            / self.cfg.sae.jumprelu_target_l0
-                                            - 1
-                                        )
-                                        ** 2
-                                    ).mean()
+                                        out.l1_loss[layer == cluster_layers_dict[name]].mean()
+                                        / self.cfg.sae.jumprelu_target_l0
+                                        - 1
+                                    ) ** 2
                                 l0 /= len(self.cfg.clusters[name])
                             else:
                                 l0 = (out.l1_loss / self.cfg.sae.jumprelu_target_l0 - 1) ** 2
