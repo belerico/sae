@@ -284,7 +284,10 @@ class Sae(nn.Module):
                 sae_in = x.to(self.dtype) - self.b_dec
                 pre_acts = self.encoder(sae_in)
                 threshold = torch.exp(self.log_threshold)
-                feature_acts: torch.Tensor = JumpReLU.apply(pre_acts, threshold, self.bandwidth)
+                # x(x>k) - (-x(-x>k))
+                feature_acts: torch.Tensor = JumpReLU.apply(
+                    pre_acts, threshold, self.bandwidth
+                ) - JumpReLU.apply(-pre_acts, threshold, self.bandwidth)
             else:
                 feature_acts = self.pre_acts(x)
             top_acts, top_indices = None, None
@@ -338,7 +341,9 @@ class Sae(nn.Module):
             if self.jumprelu:
                 threshold = torch.exp(self.log_threshold)
                 sparsity_loss = torch.sum(
-                    Step.apply(pre_acts, threshold, self.bandwidth), dim=-1
+                    Step.apply(pre_acts, threshold, self.bandwidth)
+                    - Step.apply(-pre_acts, threshold, self.bandwidth),
+                    dim=-1,
                 ).mean()  # type: ignore
             elif self.W_dec is not None:
                 # Scale features by the norm of their directions
