@@ -251,6 +251,7 @@ class ClusterSaeTrainer:
 
         rank_zero = not dist.is_initialized() or dist.get_rank() == 0
         ddp = dist.is_initialized() and not self.cfg.distribute_modules
+        rank = dist.get_rank() if ddp else 0
 
         if self.cfg.log_to_wandb and rank_zero:
             try:
@@ -268,11 +269,10 @@ class ClusterSaeTrainer:
 
         num_sae_params = sum(p.numel() for s in self.saes.values() for p in s.parameters())
         num_model_params = sum(p.numel() for p in self.model.parameters())
-        print(f"Number of SAE parameters: {num_sae_params:_}")
-        print(f"Number of model parameters: {num_model_params:_}")
+        print(f"Rank: {rank}, Number of SAE parameters: {num_sae_params:_}")
+        print(f"Rank: {rank}, Number of model parameters: {num_model_params:_}")
 
         device = self.model.device
-
         pbar = tqdm(
             desc="Training",
             disable=not rank_zero,
@@ -331,9 +331,6 @@ class ClusterSaeTrainer:
                 for handle in handles:
                     handle.remove()
 
-            if self.cfg.distribute_modules:
-                hidden_dict = self.scatter_hiddens(hidden_dict)
-
             # Normalize the activations
             if self.cfg.normalize_activations:
                 with torch.no_grad():
@@ -370,6 +367,9 @@ class ClusterSaeTrainer:
                     )  # B x 1 x D
                     cluster_activations_dict[cluster_name] = sampled_cluster_activations
 
+            if self.cfg.distribute_modules:
+                cluster_activations_dict = self.scatter_hiddens(cluster_activations_dict)
+
             for name, hiddens in cluster_activations_dict.items():
                 raw = self.saes[name]  # 'raw' never has a DDP wrapper
 
@@ -381,7 +381,7 @@ class ClusterSaeTrainer:
                     # across all ranks with the mean (median?) of the geometric medians
                     # on each rank. Not clear if that would hurt performance.
                     median = geometric_median(self.maybe_all_cat(hiddens))
-                    raw.b_dec.data = median.to(raw.dtype)
+                    raw.b_dec.data = median.to(raw.dtype).view_as(raw.b_dec)
 
                 if not maybe_wrapped:
                     # Wrap the SAEs with Distributed Data Parallel. We have to do this
@@ -405,8 +405,8 @@ class ClusterSaeTrainer:
                 wrapped = maybe_wrapped[name]
 
                 # Save memory by chunking the activations
-                for chunk in hiddens.chunk(self.cfg.micro_acc_steps):
-                    with wrapped.join() if ddp else nullcontext():
+                with wrapped.join() if ddp else nullcontext():
+                    for chunk in hiddens.chunk(self.cfg.micro_acc_steps):
                         out = wrapped(
                             chunk,
                             dead_mask=(
@@ -416,68 +416,71 @@ class ClusterSaeTrainer:
                             ),
                         )
 
-                    avg_fvu[name] += float(self.maybe_all_reduce(out.fvu.detach()) / denom)
-                    avg_l0[name] += float(
-                        self.maybe_all_reduce(
-                            (out.feature_acts.detach() > 0).float().sum(-1).mean()
+                        avg_fvu[name] += float(self.maybe_all_reduce(out.fvu.detach()) / denom)
+                        avg_l0[name] += float(
+                            self.maybe_all_reduce(
+                                (out.feature_acts.detach() > 0).float().sum(-1).mean()
+                            )
+                            / denom
                         )
-                        / denom
-                    )
-                    avg_l2[name] += float(self.maybe_all_reduce(out.l2_loss.detach()) / denom)
-                    if self.cfg.auxk_alpha > 0:
-                        avg_auxk_loss[name] += float(
-                            self.maybe_all_reduce(out.auxk_loss.detach()) / denom
-                        )
-                    if self.cfg.sae.multi_topk:
-                        avg_multi_topk_fvu[name] += float(
-                            self.maybe_all_reduce(out.multi_topk_fvu.detach()) / denom
-                        )
-                    if self.cfg.sae.k <= 0:
-                        avg_l1[name] += float(
-                            self.maybe_all_reduce(out.l1_loss.mean().detach()) / denom
-                        )
+                        avg_l2[name] += float(self.maybe_all_reduce(out.l2_loss.detach()) / denom)
+                        if self.cfg.auxk_alpha > 0:
+                            avg_auxk_loss[name] += float(
+                                self.maybe_all_reduce(out.auxk_loss.detach()) / denom
+                            )
+                        if self.cfg.sae.multi_topk:
+                            avg_multi_topk_fvu[name] += float(
+                                self.maybe_all_reduce(out.multi_topk_fvu.detach()) / denom
+                            )
+                        if self.cfg.sae.k <= 0:
+                            avg_l1[name] += float(
+                                self.maybe_all_reduce(out.l1_loss.mean().detach()) / denom
+                            )
 
-                    if self.cfg.use_l2_loss:
-                        recon_loss = out.l2_loss
-                    else:
-                        recon_loss = out.fvu
-                    if self.cfg.sae.k <= 0:
-                        if self.cfg.sae.jumprelu and self.cfg.sae.jumprelu_target_l0 is not None:
-                            if self.cfg.sae.jumprelu_per_layer_l0:
-                                l0 = torch.zeros(1, device=device, dtype=torch.float32)
-                                for layer in self.cfg.clusters[name]:
-                                    l0 += (
-                                        out.l1_loss[layer == cluster_layers_dict[name]].mean()
-                                        / self.cfg.sae.jumprelu_target_l0
-                                        - 1
-                                    ) ** 2
-                                l0 /= len(self.cfg.clusters[name])
+                        if self.cfg.use_l2_loss:
+                            recon_loss = out.l2_loss
+                        else:
+                            recon_loss = out.fvu
+                        if self.cfg.sae.k <= 0:
+                            if (
+                                self.cfg.sae.jumprelu
+                                and self.cfg.sae.jumprelu_target_l0 is not None
+                            ):
+                                if self.cfg.sae.jumprelu_per_layer_l0:
+                                    l0 = torch.zeros(1, device=device, dtype=torch.float32)
+                                    for layer in self.cfg.clusters[name]:
+                                        l0 += (
+                                            out.l1_loss[layer == cluster_layers_dict[name]].mean()
+                                            / self.cfg.sae.jumprelu_target_l0
+                                            - 1
+                                        ) ** 2
+                                    l0 /= len(self.cfg.clusters[name])
+                                else:
+                                    l0 = (out.l1_loss / self.cfg.sae.jumprelu_target_l0 - 1) ** 2
                             else:
-                                l0 = (out.l1_loss / self.cfg.sae.jumprelu_target_l0 - 1) ** 2
+                                l0 = out.l1_loss
+                            if self.l1_scheduler is not None:
+                                sparsity_loss = self.l1_scheduler.current_l1_coefficient * l0
+                            else:
+                                sparsity_loss = l0
                         else:
-                            l0 = out.l1_loss
-                        if self.l1_scheduler is not None:
-                            sparsity_loss = self.l1_scheduler.current_l1_coefficient * l0
-                        else:
-                            sparsity_loss = l0
-                    else:
-                        sparsity_loss = 0.0
+                            sparsity_loss = 0.0
 
-                    loss = (
-                        recon_loss
-                        + sparsity_loss
-                        + self.cfg.auxk_alpha * out.auxk_loss
-                        + out.multi_topk_fvu / 8
-                    )
-                    loss.div(acc_steps).backward()
+                        loss = (
+                            recon_loss
+                            + sparsity_loss
+                            + self.cfg.auxk_alpha * out.auxk_loss
+                            + out.multi_topk_fvu / 8
+                        )
+                        loss.div(acc_steps).backward()
 
-                    # Update the did_fire mask
-                    if out.topk_indices is not None:
-                        did_fire[name][out.topk_indices.flatten()] = True
-                        self.maybe_all_reduce(did_fire[name], "max")  # max is boolean "any"
+                        # Update the did_fire mask
+                        if out.topk_indices is not None:
+                            did_fire[name][out.topk_indices.flatten()] = True
+                            self.maybe_all_reduce(did_fire[name], "max")  # max is boolean "any"
 
-                # Clip gradient norm independently for each SAE
-                torch.nn.utils.clip_grad_norm_(raw.parameters(), 1.0)
+                    # Clip gradient norm independently for each SAE
+                    torch.nn.utils.clip_grad_norm_(raw.parameters(), 1.0)
 
             # Check if we need to actually do a training step
             step, substep = divmod(self.global_step + 1, self.cfg.grad_acc_steps)
@@ -568,7 +571,7 @@ class ClusterSaeTrainer:
         pbar.close()
 
     def local_hookpoints(self) -> list[str]:
-        return self.module_plan[dist.get_rank()] if self.module_plan else self.cfg.hookpoints
+        return self.cfg.hookpoints
 
     def maybe_all_cat(self, x: Tensor) -> Tensor:
         """Concatenate a tensor across all processes."""
@@ -605,7 +608,7 @@ class ClusterSaeTrainer:
             self.module_plan = []
             print(f"Training on modules: {self.cfg.hookpoints}")
             return
-
+        
         len_to_cluster = defaultdict(list)
         for k, v in self.cfg.cluster_hookpoints.items():
             len_to_cluster[len(v)].append(k)
@@ -620,7 +623,9 @@ class ClusterSaeTrainer:
             self.module_plan.append([len_to_cluster[v].pop(0) for v in chunk])
 
         for rank, modules in enumerate(self.module_plan):
-            print(f"Rank {rank} modules: {modules}")
+            print(
+                f"Rank {rank} modules: {modules}, layers to train on: {sum(len(self.cfg.cluster_hookpoints[m]) for m in modules)}"
+            )
 
     def scatter_hiddens(self, hidden_dict: dict[str, Tensor]) -> dict[str, Tensor]:
         """Scatter & gather the hidden states across ranks."""
