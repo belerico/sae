@@ -277,3 +277,31 @@ else:
         decoder_impl = eager_decode
     else:
         decoder_impl = triton_decode
+
+
+def chunk_almost_equal_sum(numbers: list[int], num_chunks: int) -> list[list[int]]:
+    """
+    Divide a list of numbers into `num_chunks` so that
+    the sum of the chunks is as equal as possible.
+
+    Args:
+        numbers (list[int]): List of numbers to divide.
+        num_chunks (int): Number of chunks to divide the numbers into.
+
+    Returns:
+        list[list[int]]: List of chunks, each containing a subset of the input numbers.
+    """
+    # Sort numbers in descending order for better balancing
+    numbers = sorted(numbers, reverse=True)
+
+    # Initialize empty chunks and their corresponding sums
+    chunks = [[] for _ in range(num_chunks)]
+    chunk_sums = [0 for _ in range(num_chunks)]
+
+    # Distribute each number into the chunk with the smallest current sum
+    for num in numbers:
+        smallest_chunk_index = chunk_sums.index(min(chunk_sums))
+        chunks[smallest_chunk_index].append(num)
+        chunk_sums[smallest_chunk_index] += num
+
+    return chunks

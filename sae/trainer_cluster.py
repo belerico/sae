@@ -1,6 +1,7 @@
 import copy
 import os
 from collections import defaultdict
+from contextlib import nullcontext
 from dataclasses import asdict
 from functools import partial
 
@@ -19,6 +20,7 @@ from .sae import Sae
 from .utils import (
     CycleIterator,
     L1Scheduler,
+    chunk_almost_equal_sum,
     geometric_median,
     get_layer_list,
     get_lr_scheduler,
@@ -33,11 +35,6 @@ class ClusterSaeTrainer:
         dl: DataLoader,
         model: PreTrainedModel,
     ):
-        if cfg.distribute_modules:
-            raise ValueError(
-                "Distributing modules is not supported in `SaeTrainer` with clusters. "
-                "Please set `distribute_modules=False`."
-            )
         if cfg.hookpoints or cfg.layers:
             raise ValueError(
                 "The `hookpoints` and `layers` parameters "
@@ -409,14 +406,15 @@ class ClusterSaeTrainer:
 
                 # Save memory by chunking the activations
                 for chunk in hiddens.chunk(self.cfg.micro_acc_steps):
-                    out = wrapped(
-                        chunk,
-                        dead_mask=(
-                            self.num_tokens_since_fired[name] > self.cfg.dead_feature_threshold
-                            if self.cfg.auxk_alpha > 0
-                            else None
-                        ),
-                    )
+                    with wrapped.join() if ddp else nullcontext():
+                        out = wrapped(
+                            chunk,
+                            dead_mask=(
+                                self.num_tokens_since_fired[name] > self.cfg.dead_feature_threshold
+                                if self.cfg.auxk_alpha > 0
+                                else None
+                            ),
+                        )
 
                     avg_fvu[name] += float(self.maybe_all_reduce(out.fvu.detach()) / denom)
                     avg_l0[name] += float(
@@ -599,19 +597,28 @@ class ClusterSaeTrainer:
 
     def distribute_modules(self):
         """Prepare a plan for distributing modules across ranks."""
+        if self.cfg.cluster_hookpoints is None or not self.cfg.cluster_hookpoints:
+            raise ValueError(
+                "No clusters specified. Please specify the `cfg.clusters_hookpoints` parameter."
+            )
         if not self.cfg.distribute_modules:
             self.module_plan = []
             print(f"Training on modules: {self.cfg.hookpoints}")
             return
 
-        layers_per_rank, rem = divmod(len(self.cfg.hookpoints), dist.get_world_size())
-        assert rem == 0, "Number of modules must be divisible by world size"
+        len_to_cluster = defaultdict(list)
+        for k, v in self.cfg.cluster_hookpoints.items():
+            len_to_cluster[len(v)].append(k)
+        clusters_per_rank = chunk_almost_equal_sum(
+            list(len(v) for v in self.cfg.cluster_hookpoints.values()),
+            dist.get_world_size(),
+        )
 
         # Each rank gets a subset of the layers
-        self.module_plan = [
-            self.cfg.hookpoints[start : start + layers_per_rank]
-            for start in range(0, len(self.cfg.hookpoints), layers_per_rank)
-        ]
+        self.module_plan = []
+        for chunk in clusters_per_rank:
+            self.module_plan.append([len_to_cluster[v].pop(0) for v in chunk])
+
         for rank, modules in enumerate(self.module_plan):
             print(f"Rank {rank} modules: {modules}")
 
