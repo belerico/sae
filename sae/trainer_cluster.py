@@ -365,7 +365,7 @@ class ClusterSaeTrainer:
                     sampled_cluster_activations = torch.gather(
                         cluster_activations, 1, indices
                     )  # B x 1 x D
-                    cluster_activations_dict[cluster_name] = sampled_cluster_activations
+                    cluster_activations_dict[cluster_name] = sampled_cluster_activations[:, 0, :]
 
             if self.cfg.distribute_modules:
                 cluster_activations_dict = self.scatter_hiddens(cluster_activations_dict)
@@ -405,7 +405,7 @@ class ClusterSaeTrainer:
                 wrapped = maybe_wrapped[name]
 
                 # Save memory by chunking the activations
-                with wrapped.join() if ddp else nullcontext():
+                with wrapped.join() if ddp else nullcontext():               
                     for chunk in hiddens.chunk(self.cfg.micro_acc_steps):
                         out = wrapped(
                             chunk,
@@ -442,10 +442,7 @@ class ClusterSaeTrainer:
                         else:
                             recon_loss = out.fvu
                         if self.cfg.sae.k <= 0:
-                            if (
-                                self.cfg.sae.jumprelu
-                                and self.cfg.sae.jumprelu_target_l0 is not None
-                            ):
+                            if self.cfg.sae.jumprelu and self.cfg.sae.jumprelu_target_l0 is not None:
                                 if self.cfg.sae.jumprelu_per_layer_l0:
                                     l0 = torch.zeros(1, device=device, dtype=torch.float32)
                                     for layer in self.cfg.clusters[name]:
@@ -608,7 +605,7 @@ class ClusterSaeTrainer:
             self.module_plan = []
             print(f"Training on modules: {self.cfg.hookpoints}")
             return
-        
+
         len_to_cluster = defaultdict(list)
         for k, v in self.cfg.cluster_hookpoints.items():
             len_to_cluster[len(v)].append(k)
@@ -622,10 +619,11 @@ class ClusterSaeTrainer:
         for chunk in clusters_per_rank:
             self.module_plan.append([len_to_cluster[v].pop(0) for v in chunk])
 
-        for rank, modules in enumerate(self.module_plan):
-            print(
-                f"Rank {rank} modules: {modules}, layers to train on: {sum(len(self.cfg.cluster_hookpoints[m]) for m in modules)}"
-            )
+        if dist.get_rank() == 0:
+            for rank, modules in enumerate(self.module_plan):
+                print(
+                    f"Rank {rank} modules: {modules}, layers to train on: {sum(len(self.cfg.cluster_hookpoints[m]) for m in modules)}"
+                )
 
     def scatter_hiddens(self, hidden_dict: dict[str, Tensor]) -> dict[str, Tensor]:
         """Scatter & gather the hidden states across ranks."""

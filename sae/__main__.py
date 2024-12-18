@@ -24,7 +24,7 @@ class RunConfig(TrainConfig):
     """Name of the model to train."""
 
     dataset: str = field(
-        default="togethercomputer/RedPajama-Data-1T-Sample",
+        default="roneneldan/TinyStories",
         positional=True,
     )
     """Path to the dataset to use for training."""
