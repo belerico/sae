@@ -75,7 +75,7 @@ if __name__ == "__main__":
         ),
         adam_betas=(0.0, 0.999),
         adam_epsilon=1e-8,
-        micro_acc_steps=1
+        micro_acc_steps=1,
     )
     trainer = SaeTrainer(cfg, data_loader, model)
     trainer.fit()

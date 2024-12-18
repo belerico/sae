@@ -12,7 +12,6 @@ from transformers import AutoModel, AutoTokenizer, BitsAndBytesConfig, PreTraine
 
 from .data import MemmapDataset, chunk_and_tokenize
 from .trainer import SaeTrainer, TrainConfig
-from .trainer_cluster import ClusterSaeTrainer
 
 
 @dataclass
