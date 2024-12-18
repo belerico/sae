@@ -84,7 +84,7 @@ class ClusterSaeTrainer:
         self.model = model
         self.saes = {
             cluster_name: Sae(cluster_widths[cluster_name][0], cfg.sae, device)
-            for cluster_name in cfg.cluster_hookpoints
+            for cluster_name in self.local_hookpoints()
         }
 
         # Dataloader
@@ -102,6 +102,7 @@ class ClusterSaeTrainer:
             self.num_training_tokens = min(
                 cfg.num_training_tokens, len(self.dl) * real_seq_len * cfg.batch_size
             )
+        self.num_training_tokens /= dist.get_world_size() if dist.is_initialized() else 1
         self.tokens_per_batch = cfg.batch_size * real_seq_len
         self.training_steps = self.num_training_tokens // self.tokens_per_batch
 
@@ -214,11 +215,14 @@ class ClusterSaeTrainer:
                 target_norm=cfg.normalize_activations,
                 device=device,
             )
-            if dist.is_available() and dist.is_initialized():
-                scaling_factors = {
-                    name: dist.all_reduce(scaling_factor, op=dist.ReduceOp.AVG)
-                    for name, scaling_factor in scaling_factors.items()
-                }
+            # if dist.is_available() and dist.is_initialized():
+            #     dist.barrier()
+            #     scaling_factors = {
+            #         name: dist.all_reduce(
+            #               torch.tensor([scaling_factor], device=device),
+            #               op=dist.ReduceOp.AVG)
+            #         for name, scaling_factor in scaling_factors.items()
+            #     }
             self.scaling_factors = scaling_factors
 
     def load_state(self, path: str):
@@ -353,7 +357,7 @@ class ClusterSaeTrainer:
             if self.cfg.clusters is not None:
                 # Collect the activations for each layer in a single tensor
                 activations_by_layer = torch.stack(
-                    [hidden_dict[hook] for hook in self.local_hookpoints()], dim=1
+                    [hidden_dict[hook] for hook in self.cfg.hookpoints], dim=1
                 )  # B x L x D
                 B, L, D = activations_by_layer.shape
 
@@ -571,7 +575,11 @@ class ClusterSaeTrainer:
         pbar.close()
 
     def local_hookpoints(self) -> list[str]:
-        return self.cfg.hookpoints
+        return (
+            self.module_plan[dist.get_rank()]
+            if self.module_plan
+            else self.cfg.cluster_hookpoints.keys()
+        )
 
     def maybe_all_cat(self, x: Tensor) -> Tensor:
         """Concatenate a tensor across all processes."""

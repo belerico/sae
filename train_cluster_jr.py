@@ -42,11 +42,11 @@ if __name__ == "__main__":
         "k5": [[3, 4], [5, 6]],
     }
     unique_cluster_flatten = {
-        # "k1-c0": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
-        # "k2-c0": [0, 1, 2, 3, 4, 5, 6],
-        # "k2-c1": [7, 8, 9, 10],
-        # "k3-c0": [0, 1, 2],
-        # "k3-c1": [3, 4, 5, 6],
+        "k1-c0": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+        "k2-c0": [0, 1, 2, 3, 4, 5, 6],
+        "k2-c1": [7, 8, 9, 10],
+        "k3-c0": [0, 1, 2],
+        "k3-c1": [3, 4, 5, 6],
         "k4-c2": [7, 8],
         "k4-c3": [9, 10],
         "k5-c1": [3, 4],
@@ -71,6 +71,8 @@ if __name__ == "__main__":
         split="train",
         trust_remote_code=True,
     )
+    if ddp:
+        dataset = dataset.shard(num_shards=dist.get_world_size(), index=rank)
 
     def from_tokens(x):
         return {
@@ -108,9 +110,9 @@ if __name__ == "__main__":
         max_seq_len=max_seq_len,
         use_l2_loss=True,
         cycle_iterator=True,
-        num_training_tokens=1_000_000_000,
-        normalize_activations=None,
-        num_norm_estimation_tokens=2_000_000,
+        num_training_tokens=1_000_000,
+        normalize_activations=1,
+        num_norm_estimation_tokens=1_000,
         run_name="checkpoints-clusters/{}-1024-jr-lambda-{}-target-L0-{}-lr-{}".format(
             model_name, l1_coefficient, target_l0, lr
         ),
@@ -118,8 +120,8 @@ if __name__ == "__main__":
         adam_epsilon=1e-8,
         clusters=unique_cluster_flatten,
         micro_acc_steps=1,
-        log_to_wandb=False,
-        distribute_modules=True,
+        log_to_wandb=True,
+        distribute_modules=False,
     )
     trainer = ClusterSaeTrainer(cfg, data_loader, model)
     trainer.fit()
