@@ -6,9 +6,11 @@ import torch
 from torch import Tensor, nn
 from torch.utils.data import DataLoader
 
+from sae.utils import CycleIterator
+
 
 def estimate_norm_scaling_factor(
-    data_loader: DataLoader,
+    data_loader: DataLoader | CycleIterator,
     model: torch.nn.Module,
     max_tokens: int,
     hook: Callable[

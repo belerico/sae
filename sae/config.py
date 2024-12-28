@@ -131,6 +131,12 @@ class TrainConfig(Serializable):
     ] = standard_hook
     """The hook function to be used to collect model activations"""
 
+    keep_last_n_checkpoints: int = 5
+    """Number of last checkpoints to keep. If -1, keep all checkpoints."""
+
+    resume_from: str | None = None
+    """Path to a checkpoint to resume training from."""
+
     log_to_wandb: bool = True
     run_name: str | None = None
     wandb_log_frequency: int = 1
@@ -139,11 +145,5 @@ class TrainConfig(Serializable):
         assert not (
             self.layers and self.layer_stride != 1
         ), "Cannot specify both `layers` and `layer_stride`."
-        # if (
-        #     self.normalize_activations is not None
-        #     and self.normalize_activations.lower() not in {"expected_norm_1", "norm_1"}
-        # ):
-        #     raise ValueError(
-        #         "`normalize_activations` must be one of `expected_norm_1` or `norm_1`. "
-        #         "To disable activations normalization pass None instead."
-        #     )
+        if self.keep_last_n_checkpoints == 0:
+            raise ValueError("`keep_last_n_checkpoints` must be at least 1 or -1.")

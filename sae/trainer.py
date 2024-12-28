@@ -1,5 +1,6 @@
 import copy
 import os
+import shutil
 import warnings
 from collections import defaultdict
 from dataclasses import asdict
@@ -192,25 +193,34 @@ class SaeTrainer:
                 final_l1_coefficient=cfg.l1_coefficient,
             )
 
+        # Resume from checkpoint
+        if cfg.resume_from is not None:
+            self.load_state(cfg.resume_from)
+
         # Normalize activations
-        if cfg.normalize_activations:
-            name_to_module = {name: self.model.get_submodule(name) for name in self.cfg.hookpoints}
-            module_to_name = {v: k for k, v in name_to_module.items()}
-            scaling_factors = estimate_norm_scaling_factor(
-                dl,
-                model,
-                cfg.num_norm_estimation_tokens,
-                cfg.hook,
-                module_to_name=module_to_name,
-                target_norm=cfg.normalize_activations,
-                device=device,
-            )
-            if dist.is_available() and dist.is_initialized():
-                scaling_factors = {
-                    name: dist.all_reduce(scaling_factor, op=dist.ReduceOp.AVG)
-                    for name, scaling_factor in scaling_factors.items()
-                }
-            self.scaling_factors = scaling_factors
+        if cfg.resume_from is None:
+            self.estimate_norm_scaling_factor()
+
+    def estimate_norm_scaling_factor(self):
+        if not self.cfg.normalize_activations:
+            return
+        name_to_module = {name: self.model.get_submodule(name) for name in self.cfg.hookpoints}
+        module_to_name = {v: k for k, v in name_to_module.items()}
+        scaling_factors = estimate_norm_scaling_factor(
+            self.dl,
+            self.model,
+            self.cfg.num_norm_estimation_tokens,
+            self.cfg.hook,
+            module_to_name=module_to_name,
+            target_norm=self.cfg.normalize_activations,
+            device=self.model.device,
+        )
+        if dist.is_available() and dist.is_initialized():
+            scaling_factors = {
+                name: dist.all_reduce(scaling_factor, op=dist.ReduceOp.AVG)
+                for name, scaling_factor in scaling_factors.items()
+            }
+        self.scaling_factors = scaling_factors
 
     def load_state(self, path: str):
         """Load the trainer state from disk."""
@@ -235,6 +245,9 @@ class SaeTrainer:
 
         for name, sae in self.saes.items():
             load_model(sae, f"{path}/{name}/sae.safetensors", device=str(device))
+
+        if self.cfg.normalize_activations:
+            self.scaling_factors = torch.load(f"{path}/scaling_factors.pt", map_location=device)
 
     def fit(self):
         # Use Tensor Cores even for fp32 matmuls
@@ -597,14 +610,28 @@ class SaeTrainer:
     def save(self):
         """Save the SAEs to disk."""
 
-        path = self.cfg.run_name or "sae-ckpts"
-        path = f"{path}/step_{self.global_step}"
+        run_path = self.cfg.run_name or "sae-ckpts"
+        path = f"{run_path}/step_{self.global_step}"
         rank_zero = not dist.is_initialized() or dist.get_rank() == 0
         if rank_zero:
             os.makedirs(path, exist_ok=True)
 
         if rank_zero or self.cfg.distribute_modules:
-            print("Saving checkpoint")
+            print("Removing old checkpoints")
+
+            if self.cfg.keep_last_n_checkpoints > 0:
+                checkpoints = [f"{run_path}/{p}" for p in os.listdir(run_path) if "step" in p]
+                checkpoints = sorted(
+                    checkpoints, key=lambda x: int(x.split("_")[-1]), reverse=True
+                )
+                if self.cfg.keep_last_n_checkpoints == 1:
+                    to_remove = checkpoints
+                else:
+                    to_remove = checkpoints[: -self.cfg.keep_last_n_checkpoints + 1]
+                for path_to_remove in to_remove:
+                    shutil.rmtree(f"{path_to_remove}", ignore_errors=True)
+
+            print("Saving new checkpoint")
 
             for hook, sae in self.saes.items():
                 assert isinstance(sae, Sae)
