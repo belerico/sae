@@ -2,15 +2,15 @@
 
 import math
 from multiprocessing import cpu_count
-from typing import Optional, Tuple, TypeVar, Union
+from typing import Optional, TypeVar, Union, cast
 
 import numpy as np
 import torch
-from datasets import Dataset, DatasetDict, IterableDataset, IterableDatasetDict
+from datasets import Dataset, DatasetDict, IterableDataset
 from torch.utils.data import Dataset as TorchDataset
 from transformers import PreTrainedTokenizerBase
 
-T = TypeVar("T", bound=Union[Dataset, DatasetDict])
+T = TypeVar("T", Dataset, DatasetDict)
 
 
 def chunk_and_tokenize(
@@ -86,7 +86,7 @@ def chunk_and_tokenize(
 
         return output
 
-    data = data.map(
+    mapped = data.map(
         _tokenize_fn,
         # Batching is important for ensuring that we don't waste tokens
         # since we always throw away the last element of the batch we
@@ -97,11 +97,15 @@ def chunk_and_tokenize(
         remove_columns=get_columns_all_equal(data),
         load_from_cache_file=load_from_cache_file,
     )
-    return data.with_format(format, columns=["input_ids"])
+
+    # We know that "mapped" has the same 'shape' (Dataset vs. DatasetDict)
+    # as the input "data", so we cast back to T:
+    mapped = cast(T, mapped)
+    return mapped.with_format(format, columns=["input_ids"])
 
 
 def chunk_and_tokenize_streaming(
-    data: Tuple[DatasetDict | Dataset | IterableDatasetDict | IterableDataset],
+    data: T,
     tokenizer: PreTrainedTokenizerBase,
     *,
     text_key: str = "text",
