@@ -34,7 +34,7 @@ class SaeTrainer:
     def __init__(
         self,
         cfg: TrainConfig,
-        dl: DataLoader,
+        dataloader: DataLoader,
         model: PreTrainedModel,
     ):
         if cfg.hook is None:
@@ -66,7 +66,7 @@ class SaeTrainer:
         self.distribute_modules()
 
         # Check shapes
-        input_shapes = resolve_widths(cfg, model, cfg.hookpoints, dataloader=dl)
+        input_shapes = resolve_widths(cfg, model, cfg.hookpoints, dataloader=dataloader)
         unique_shapes = set(input_shapes.values())
         if cfg.distribute_modules and len(unique_shapes) > 1:
             # dist.all_to_all requires tensors to have the same shape across ranks
@@ -87,7 +87,7 @@ class SaeTrainer:
         }
 
         # Dataloader
-        self.dl = dl
+        self.dataloader = dataloader
         real_seq_len = list(unique_shapes)[0][0] // cfg.batch_size
         print(
             f"The specified maximum sequence length is {cfg.max_seq_len}. "
@@ -95,10 +95,10 @@ class SaeTrainer:
         )
         if cfg.cycle_iterator:
             self.num_training_tokens = cfg.num_training_tokens
-            self.dl = CycleIterator(self.dl)
+            self.dataloader = CycleIterator(self.dataloader)
         else:
             self.num_training_tokens = min(
-                cfg.num_training_tokens, len(self.dl) * real_seq_len * cfg.batch_size
+                cfg.num_training_tokens, len(self.dataloader) * real_seq_len * cfg.batch_size
             )
         self.tokens_per_batch = cfg.batch_size * real_seq_len
         self.training_steps = self.num_training_tokens // self.tokens_per_batch
@@ -212,7 +212,7 @@ class SaeTrainer:
         name_to_module = {name: self.model.get_submodule(name) for name in self.cfg.hookpoints}
         module_to_name = {v: k for k, v in name_to_module.items()}
         scaling_factors = estimate_norm_scaling_factor(
-            self.dl,
+            self.dataloader,
             self.model,
             self.cfg.num_norm_estimation_tokens,
             self.cfg.hook,
@@ -314,7 +314,7 @@ class SaeTrainer:
         maybe_wrapped: dict[str, DDP] | dict[str, Sae] = {}
         module_to_name = {v: k for k, v in name_to_module.items()}
 
-        for batch_idx, batch in enumerate(self.dl):
+        for batch_idx, batch in enumerate(self.dataloader):
             if self.global_step >= self.training_steps:
                 break
 

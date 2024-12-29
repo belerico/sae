@@ -1,48 +1,49 @@
 import torch
 from datasets import load_dataset
 from torch.utils.data import DataLoader
-from transformers import AutoModel
+from transformers import AutoModel, AutoTokenizer
 
 from sae import SaeConfig, SaeTrainer, TrainConfig
+from sae.data import chunk_and_tokenize_streaming
 
 if __name__ == "__main__":
     model_name = "EleutherAI/pythia-160m-deduped"
-    l1_coefficient = 5e-3
+    l1_coefficient = 0.5
     max_seq_len = 512
     target_l0 = 64
-    batch_size = 1
+    batch_size = 16
     lr = 7e-4
 
-    # dataset = load_dataset(
-    #     "allenai/c4",
-    #     "en",
-    #     split="train",
-    #     trust_remote_code=True,
-    #     streaming=True,
-    # )
-    # tokenizer = AutoTokenizer.from_pretrained(model_name)
-    # tokenizer.pad_token = tokenizer.eos_token
-    # dataset = chunk_and_tokenize_streaming(dataset, tokenizer, max_seq_len=max_seq_len)
     dataset = load_dataset(
-        "NeelNanda/pile-small-tokenized-2b",
-        streaming=True,
+        "allenai/c4",
+        "en",
         split="train",
         trust_remote_code=True,
+        streaming=True,
     )
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    tokenizer.pad_token = tokenizer.eos_token
+    dataset = chunk_and_tokenize_streaming(dataset, tokenizer, max_seq_len=max_seq_len)
+    # dataset = load_dataset(
+    #     "NeelNanda/pile-small-tokenized-2b",
+    #     streaming=True,
+    #     split="train",
+    #     trust_remote_code=True,
+    # )
 
     def from_tokens(x):
         return {
             "input_ids": torch.stack(list(torch.tensor(example["tokens"]) for example in x), dim=0)
         }
 
-    data_loader = DataLoader(
+    dataloader = DataLoader(
         dataset,
-        collate_fn=from_tokens,
+        # collate_fn=from_tokens,
         batch_size=batch_size,
     )
     model = AutoModel.from_pretrained(
         model_name,
-        device_map={"": "mps"},
+        device_map={"": "cuda"},
         torch_dtype=torch.float32,
         trust_remote_code=True,
     )
@@ -74,5 +75,5 @@ if __name__ == "__main__":
         adam_betas=(0.0, 0.999),
         adam_epsilon=1e-8,
     )
-    trainer = SaeTrainer(cfg, data_loader, model)
+    trainer = SaeTrainer(cfg, dataloader, model)
     trainer.fit()
