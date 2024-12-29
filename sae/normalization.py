@@ -1,11 +1,10 @@
-from functools import partial
-from typing import Any, Callable, Dict, Optional, Tuple
+from typing import Dict
 
 import numpy as np
 import torch
-from torch import Tensor, nn
 from torch.utils.data import DataLoader
 
+from sae.hooks import HookWithKwargs, forward_hook_wrapper
 from sae.utils import CycleIterator
 
 
@@ -13,10 +12,7 @@ def estimate_norm_scaling_factor(
     data_loader: DataLoader | CycleIterator,
     model: torch.nn.Module,
     max_tokens: int,
-    hook: Callable[
-        [nn.Module, Tuple[Any, ...], Any, Dict[nn.Module, str], Dict[str, Tensor]],
-        Optional[Any],
-    ],
+    hook: HookWithKwargs | None,
     module_to_name: Dict[torch.nn.Module, str],
     target_norm: float = 1.0,
     device: str | torch.device = "cuda",
@@ -45,11 +41,7 @@ def estimate_norm_scaling_factor(
         # Forward pass on the model to get the next batch of activations
         handles = [
             mod.register_forward_hook(
-                partial(
-                    hook,
-                    module_to_name=module_to_name,
-                    hidden_dict=hidden_dict,
-                )
+                forward_hook_wrapper(hook, module_to_name=module_to_name, hidden_dict=hidden_dict)
             )
             for mod in module_to_name.keys()
         ]

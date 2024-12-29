@@ -1,10 +1,8 @@
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Optional, Tuple
 
 from simple_parsing import Serializable, list_field
-from torch import Tensor, nn
 
-from .utils import standard_hook
+from sae.hooks import HookWithKwargs, standard_hook
 
 
 @dataclass
@@ -125,10 +123,7 @@ class TrainConfig(Serializable):
     num_norm_estimation_tokens: int = 1_000_000
     """Number of tokens to use for estimating the normalization factor."""
 
-    hook: Callable[
-        [nn.Module, Tuple[Any, ...], Any, Dict[nn.Module, str], Dict[str, Tensor]],
-        Optional[Any],
-    ] = standard_hook
+    hook: HookWithKwargs | None = standard_hook
     """The hook function to be used to collect model activations"""
 
     keep_last_n_checkpoints: int = 5

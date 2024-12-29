@@ -5,7 +5,6 @@ import warnings
 from collections import defaultdict
 from dataclasses import asdict
 from fnmatch import fnmatchcase
-from functools import partial
 
 import torch
 import torch.distributed as dist
@@ -18,6 +17,7 @@ from tqdm.auto import tqdm
 from transformers import PreTrainedModel
 
 from .config import TrainConfig
+from .hooks import forward_hook_wrapper, standard_hook
 from .normalization import estimate_norm_scaling_factor
 from .sae import Sae
 from .utils import (
@@ -27,7 +27,6 @@ from .utils import (
     get_layer_list,
     get_lr_scheduler,
     resolve_widths,
-    standard_hook,
 )
 
 
@@ -321,7 +320,7 @@ class SaeTrainer:
             # Forward pass on the model to get the next batch of activations
             handles = [
                 mod.register_forward_hook(
-                    partial(
+                    forward_hook_wrapper(
                         self.cfg.hook,
                         module_to_name=module_to_name,
                         hidden_dict=hidden_dict,
