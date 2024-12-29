@@ -2,7 +2,7 @@
 
 import math
 from multiprocessing import cpu_count
-from typing import Optional, TypeVar, Union, cast
+from typing import TypeVar, Union, cast
 
 import numpy as np
 import torch
@@ -48,7 +48,10 @@ def chunk_and_tokenize(
 
     def _tokenize_fn(x: dict[str, list]):
         chunk_size = min(tokenizer.model_max_length, max_seq_len)
-        sep = tokenizer.eos_token or "<|endoftext|>"
+        sep_id = tokenizer.eos_token_id
+        if sep_id is None:
+            tokenizer.add_special_tokens({"eos_token": "<|endoftext|>"})
+        sep = tokenizer.eos_token
         joined_text = sep.join([""] + x[text_key])
         output = tokenizer(
             # Concatenate all the samples together, separated by the EOS token.
@@ -110,7 +113,7 @@ def chunk_and_tokenize_streaming(
     *,
     text_key: str = "text",
     max_seq_len: int = 2048,
-    eos_token_id: Optional[int] = None,
+    return_final_batch: bool = False,
 ) -> IterableDataset:
     """Perform GPT-style chunking and tokenization on a streaming dataset.
 
@@ -123,7 +126,8 @@ def chunk_and_tokenize_streaming(
         tokenizer: The tokenizer to use.
         text_key: The key in the dataset to use as the text to tokenize.
         max_seq_len: The maximum length of a chunk of input ids.
-        eos_token_id: The id of the eos token. If None, will use tokenizer.eos_token_id.
+        return_final_batch: Whether to return the final batch, which may be smaller
+            than the others.
 
     Returns:
         An IterableDataset over the tokenized chunks.
@@ -134,29 +138,34 @@ def chunk_and_tokenize_streaming(
         columns_to_remove.remove(text_key)
 
     def generator():
-        buffer = []
+        sep_id = tokenizer.eos_token_id
+        if sep_id is None:
+            tokenizer.add_special_tokens({"eos_token": "<|endoftext|>"})
+            sep_id = tokenizer.eos_token_id
+        chunk_size = min(tokenizer.model_max_length, max_seq_len)
+        buffer = [sep_id]
         for sample in data:
             # Remove unwanted columns from the sample
             sample = {key: sample[key] for key in sample if key not in columns_to_remove}
 
             text = sample[text_key]
             tokens = tokenizer.encode(text, add_special_tokens=False)
-            buffer.extend(tokens)
+            buffer.extend(tokens + [sep_id])
 
             # Slice the buffer into chunks of max_seq_len
-            while len(buffer) >= max_seq_len:
-                chunk = buffer[:max_seq_len]
-                buffer = buffer[max_seq_len:]
+            while len(buffer) >= chunk_size:
+                chunk = buffer[:chunk_size]
+                buffer = buffer[chunk_size:]
                 yield {"input_ids": torch.tensor(chunk)}
 
         # Process any remaining tokens in the buffer
-        while len(buffer) >= max_seq_len:
-            chunk = buffer[:max_seq_len]
-            buffer = buffer[max_seq_len:]
+        while len(buffer) >= chunk_size:
+            chunk = buffer[:chunk_size]
+            buffer = buffer[chunk_size:]
             yield {"input_ids": torch.tensor(chunk)}
 
         # Yield the final chunk if any tokens are left
-        if buffer:
+        if buffer and return_final_batch:
             yield {"input_ids": torch.tensor(buffer)}
 
     return IterableDataset.from_generator(generator)
