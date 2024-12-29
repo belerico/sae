@@ -1,7 +1,7 @@
 import json
 from fnmatch import fnmatch
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import Any, NamedTuple, cast
 
 import einops
 import numpy as np
@@ -284,7 +284,9 @@ class Sae(nn.Module):
                 sae_in = x.to(self.dtype) - self.b_dec
                 pre_acts = self.encoder(sae_in)
                 threshold = torch.exp(self.log_threshold)
-                feature_acts: torch.Tensor = JumpReLU.apply(pre_acts, threshold, self.bandwidth)
+                feature_acts = cast(
+                    torch.Tensor, JumpReLU.apply(pre_acts, threshold, self.bandwidth)
+                )
             else:
                 feature_acts = self.pre_acts(x)
             top_acts, top_indices = None, None
@@ -337,9 +339,8 @@ class Sae(nn.Module):
         if self.cfg.k <= 0:
             if self.jumprelu:
                 threshold = torch.exp(self.log_threshold)
-                sparsity_loss = torch.sum(
-                    Step.apply(pre_acts, threshold, self.bandwidth), dim=-1
-                ).mean()  # type: ignore
+                pre_acts_thr = cast(torch.Tensor, Step.apply(pre_acts, threshold, self.bandwidth))  # type: ignore
+                sparsity_loss = torch.sum(pre_acts_thr, dim=-1).mean()
             elif self.W_dec is not None:
                 # Scale features by the norm of their directions
                 weighted_feature_acts = feature_acts * self.W_dec.norm(dim=1)

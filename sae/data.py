@@ -48,10 +48,12 @@ def chunk_and_tokenize(
 
     def _tokenize_fn(x: dict[str, list]):
         chunk_size = min(tokenizer.model_max_length, max_seq_len)
-        sep_id = tokenizer.eos_token_id
-        if sep_id is None:
-            tokenizer.add_special_tokens({"eos_token": "<|endoftext|>"})
         sep = tokenizer.eos_token
+        if sep is None:
+            tokenizer.add_special_tokens({"eos_token": "<|endoftext|>"})
+            sep = "<|endoftext|>"
+        elif isinstance(sep, list):
+            raise ValueError(f"Tokenizer has multiple EOS tokens: {','.join(sep)}.")
         joined_text = sep.join([""] + x[text_key])
         output = tokenizer(
             # Concatenate all the samples together, separated by the EOS token.
