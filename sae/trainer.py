@@ -214,17 +214,22 @@ class SaeTrainer:
         scaling_factors = estimate_norm_scaling_factor(
             self.dataloader,
             self.model,
-            self.cfg.num_norm_estimation_tokens,
+            self.cfg.num_norm_estimation_tokens // dist.get_world_size()
+            if dist.is_initialized()
+            else 1,
             self.cfg.hook,
             module_to_name=module_to_name,
             target_norm=self.cfg.normalize_activations,
             device=self.model.device,
         )
         if dist.is_available() and dist.is_initialized():
-            scaling_factors = {
-                name: dist.all_reduce(scaling_factor, op=dist.ReduceOp.AVG)
-                for name, scaling_factor in scaling_factors.items()
-            }
+            all_scaling_factors = [None for _ in range(dist.get_world_size())]
+            dist.all_gather_object(all_scaling_factors, scaling_factors)
+            # Average the scaling factors across all ranks
+            for hook_name in scaling_factors.keys():
+                scaling_factors[hook_name] = sum(
+                    sf[hook_name] for sf in all_scaling_factors if sf is not None
+                ) / len(all_scaling_factors)
         self.scaling_factors = scaling_factors
 
     def load_state(self, path: str):
