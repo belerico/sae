@@ -211,9 +211,8 @@ def resolve_widths(
     cfg: TrainConfig,
     model: PreTrainedModel,
     module_names: list[str],
-    dim: int = -1,
-    dl: DataLoader | None = None,
-) -> dict[str, int]:
+    dataloader: DataLoader | None = None,
+) -> dict[str, torch.Size]:
     """Find number of output dimensions for the specified modules."""
     module_to_name = {model.get_submodule(name): name for name in module_names}
     hidden_dict: Dict[str, Tensor] = {}
@@ -225,10 +224,10 @@ def resolve_widths(
     )
 
     handles = [mod.register_forward_hook(hook) for mod in module_to_name]
-    if dl is None:
+    if dataloader is None:
         dummy = model.dummy_inputs
     else:
-        dummy = next(iter(dl))
+        dummy = next(iter(dataloader))
     dummy = send_to_device(dummy, model.device)
     try:
         model(**dummy)
@@ -236,7 +235,7 @@ def resolve_widths(
         for handle in handles:
             handle.remove()
 
-    shapes = {name: hidden.shape[dim] for name, hidden in hidden_dict.items()}
+    shapes = {name: hidden.shape for name, hidden in hidden_dict.items()}
     return shapes
 
 

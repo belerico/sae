@@ -64,25 +64,31 @@ class SaeTrainer:
         # Distribute modules
         self.cfg = cfg
         self.distribute_modules()
-        N = len(cfg.hookpoints)
-        device = model.device
-        input_widths = resolve_widths(cfg, model, cfg.hookpoints, dl=dl)
-        unique_widths = set(input_widths.values())
-        if cfg.distribute_modules and len(unique_widths) > 1:
+
+        # Check shapes
+        input_shapes = resolve_widths(cfg, model, cfg.hookpoints, dataloader=dl)
+        unique_shapes = set(input_shapes.values())
+        if cfg.distribute_modules and len(unique_shapes) > 1:
             # dist.all_to_all requires tensors to have the same shape across ranks
             raise ValueError(
                 f"All modules must output tensors of the same shape when using "
-                f"`distribute_modules=True`, got {unique_widths}"
+                f"`distribute_modules=True`, got {unique_shapes}"
             )
+        # Moreover, we request that the hook returns 2D tensors of shape B x D
+        for shape in input_shapes.values():
+            if len(shape) != 2:
+                raise ValueError(f"The hook must return 2D tensors of shape B x D, got {shape}")
+
+        # SAEs
         self.model = model
+        device = model.device
         self.saes = {
-            hook: Sae(input_widths[hook], cfg.sae, device) for hook in self.local_hookpoints()
+            hook: Sae(input_shapes[hook][-1], cfg.sae, device) for hook in self.local_hookpoints()
         }
 
         # Dataloader
         self.dl = dl
-        shapes = resolve_widths(cfg, model, cfg.hookpoints, dim=0, dl=self.dl)
-        real_seq_len = list(shapes.values())[0] // cfg.batch_size
+        real_seq_len = list(unique_shapes)[0][0] // cfg.batch_size
         print(
             f"The specified maximum sequence length is {cfg.max_seq_len}. "
             f"The real sequence length after the SAE hook is {real_seq_len}"
