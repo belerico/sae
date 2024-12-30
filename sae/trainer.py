@@ -93,15 +93,11 @@ class SaeTrainer:
             f"The specified maximum sequence length is {cfg.max_seq_len}. "
             f"The real sequence length after the SAE hook is {real_seq_len}"
         )
-        if cfg.cycle_iterator:
-            self.num_training_tokens = cfg.num_training_tokens
-            self.dataloader = CycleIterator(self.dataloader)
-        else:
-            self.num_training_tokens = min(
-                cfg.num_training_tokens, len(self.dataloader) * real_seq_len * cfg.batch_size
-            )
+        self.num_training_tokens = cfg.num_training_tokens
+        self.dataloader = CycleIterator(self.dataloader)
         self.tokens_per_batch = cfg.batch_size * real_seq_len
         self.training_steps = self.num_training_tokens // self.tokens_per_batch
+        self.training_steps //= dist.get_world_size() if dist.is_initialized() else 1
 
         # Variables for global stats
         self.global_step = 0
