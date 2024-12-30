@@ -11,7 +11,6 @@ from torch.utils.data import Dataset as TorchDataset
 from transformers import PreTrainedTokenizerBase
 
 T = TypeVar("T", Dataset, DatasetDict)
-It_T = TypeVar("It_T", IterableDataset, IterableDatasetDict)
 
 
 def chunk_and_tokenize(
@@ -49,12 +48,7 @@ def chunk_and_tokenize(
 
     def _tokenize_fn(x: dict[str, list]):
         chunk_size = min(tokenizer.model_max_length, max_seq_len)
-        sep = tokenizer.eos_token
-        if sep is None:
-            tokenizer.add_special_tokens({"eos_token": "<|endoftext|>"})
-            sep = "<|endoftext|>"
-        elif isinstance(sep, list):
-            raise ValueError(f"Tokenizer has multiple EOS tokens: {','.join(sep)}.")
+        sep = tokenizer.eos_token or "<|endoftext|>"
         joined_text = sep.join([""] + x[text_key])
         output = tokenizer(
             # Concatenate all the samples together, separated by the EOS token.
@@ -64,6 +58,7 @@ def chunk_and_tokenize(
             return_overflowing_tokens=True,
             truncation=True,
         )
+        output.pop("overflow_to_sample_mapping", None)
 
         if overflow := output.pop("overflowing_tokens", None):
             # Slow Tokenizers return unnested lists of ints
@@ -103,7 +98,6 @@ def chunk_and_tokenize(
         remove_columns=get_columns_all_equal(data),
         load_from_cache_file=load_from_cache_file,
     )
-
     # We know that "mapped" has the same 'shape' (Dataset vs. DatasetDict)
     # as the input "data", so we cast back to T:
     mapped = cast(T, mapped)
@@ -111,9 +105,10 @@ def chunk_and_tokenize(
 
 
 def chunk_and_tokenize_streaming(
-    data: It_T,
+    data: IterableDataset | IterableDatasetDict,
     tokenizer: PreTrainedTokenizerBase,
     *,
+    format: str = "torch",
     text_key: str = "text",
     max_seq_len: int = 2048,
     return_final_batch: bool = False,
@@ -127,6 +122,7 @@ def chunk_and_tokenize_streaming(
     Args:
         data: The streaming dataset to chunk and tokenize.
         tokenizer: The tokenizer to use.
+        format: The format to return the dataset in, passed to `Dataset.with_format`.
         text_key: The key in the dataset to use as the text to tokenize.
         max_seq_len: The maximum length of a chunk of input ids.
         return_final_batch: Whether to return the final batch, which may be smaller
@@ -147,15 +143,12 @@ def chunk_and_tokenize_streaming(
             # Remove unwanted columns from the sample
             sample = {key: sample[key] for key in sample if key not in columns_to_remove}
 
-            text = sample[text_key]
             tokens = tokenizer(
-                # Concatenate all the samples together, separated by the EOS token.
-                text,  # start with an eos token
+                sample[text_key],
                 max_length=chunk_size,
                 return_attention_mask=False,
                 return_overflowing_tokens=True,
                 truncation=True,
-                add_special_tokens=False,
             )
             for example in tokens["input_ids"] + tokens.pop("overflowing_tokens", []):
                 buffer.extend(example)
@@ -164,19 +157,19 @@ def chunk_and_tokenize_streaming(
                 while len(buffer) >= chunk_size:
                     chunk = buffer[:chunk_size]
                     buffer = buffer[chunk_size:]
-                    yield {"input_ids": torch.tensor(chunk)}
+                    yield {"input_ids": chunk}
 
         # Process any remaining tokens in the buffer
         while len(buffer) >= chunk_size:
             chunk = buffer[:chunk_size]
             buffer = buffer[chunk_size:]
-            yield {"input_ids": torch.tensor(chunk)}
+            yield {"input_ids": chunk}
 
         # Yield the final chunk if any tokens are left
         if buffer and return_final_batch:
-            yield {"input_ids": torch.tensor(buffer)}
+            yield {"input_ids": buffer}
 
-    return IterableDataset.from_generator(generator)
+    return IterableDataset.from_generator(generator).with_format(format)
 
 
 def get_columns_all_equal(
