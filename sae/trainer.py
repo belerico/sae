@@ -421,7 +421,9 @@ class SaeTrainer:
                             l0 = (out.l1_loss / self.cfg.sae.jumprelu_target_l0 - 1) ** 2
                         else:
                             l0 = out.l1_loss
-                        sparsity_loss = self.l1_scheduler.current_l1_coefficient * l0
+                        sparsity_loss = l0
+                        if self.l1_scheduler is not None:
+                            sparsity_loss *= self.l1_scheduler.current_l1_coefficient
                     else:
                         sparsity_loss = 0.0
 
@@ -451,7 +453,7 @@ class SaeTrainer:
                 self.optimizer.step()
                 self.optimizer.zero_grad()
                 self.lr_scheduler.step()
-                if self.cfg.sae.k <= 0:
+                if self.l1_scheduler is not None:
                     self.l1_scheduler.step()
 
                 ###############
@@ -616,20 +618,17 @@ class SaeTrainer:
             os.makedirs(run_path, exist_ok=True)
 
         if rank_zero:
-            print("Removing old checkpoints")
             if self.cfg.keep_last_n_checkpoints > 0:
                 checkpoints = [f"{run_path}/{p}" for p in os.listdir(run_path) if "step" in p]
                 checkpoints = sorted(
                     checkpoints, key=lambda x: int(x.split("_")[-1]), reverse=False
                 )
-                print(f"Found {checkpoints} checkpoints")
                 if self.cfg.keep_last_n_checkpoints == 1:
                     to_remove = checkpoints
                 elif len(checkpoints) >= self.cfg.keep_last_n_checkpoints:
                     to_remove = checkpoints[: -self.cfg.keep_last_n_checkpoints + 1]
                 else:
                     to_remove = []
-                print(f"Removing {to_remove} checkpoints")
                 for path_to_remove in to_remove:
                     shutil.rmtree(f"{path_to_remove}", ignore_errors=False)
 
@@ -642,7 +641,6 @@ class SaeTrainer:
             else:
                 all_saes = [self.saes]
 
-            print("Saving new checkpoint")
             for saes in all_saes:
                 if saes is not None:
                     for hook, sae in saes.items():
@@ -659,7 +657,7 @@ class SaeTrainer:
                 },
                 f"{path}/state.pt",
             )
-            if self.l1_scheduler is not None and self.cfg.sae.k <= 0:
+            if self.l1_scheduler is not None:
                 torch.save(self.l1_scheduler.state_dict(), f"{path}/l1_scheduler.pt")
             if self.cfg.normalize_activations:
                 torch.save(self.scaling_factors, f"{path}/scaling_factors.pt")
