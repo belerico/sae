@@ -2,15 +2,16 @@
 
 import math
 from multiprocessing import cpu_count
-from typing import TypeVar, Union, cast
+from typing import List, TypeVar, Union, cast
 
 import numpy as np
 import torch
-from datasets import Dataset, DatasetDict, IterableDataset
+from datasets import Dataset, DatasetDict, IterableDataset, IterableDatasetDict
 from torch.utils.data import Dataset as TorchDataset
 from transformers import PreTrainedTokenizerBase
 
 T = TypeVar("T", Dataset, DatasetDict)
+It_T = TypeVar("It_T", IterableDataset, IterableDatasetDict)
 
 
 def chunk_and_tokenize(
@@ -110,7 +111,7 @@ def chunk_and_tokenize(
 
 
 def chunk_and_tokenize_streaming(
-    data: T,
+    data: It_T,
     tokenizer: PreTrainedTokenizerBase,
     *,
     text_key: str = "text",
@@ -173,7 +174,9 @@ def chunk_and_tokenize_streaming(
     return IterableDataset.from_generator(generator)
 
 
-def get_columns_all_equal(dataset: Union[Dataset, DatasetDict]) -> list[str]:
+def get_columns_all_equal(
+    dataset: Union[Dataset, DatasetDict, IterableDataset, IterableDatasetDict]
+) -> List[str]:
     """Get a single list of columns in a `Dataset` or `DatasetDict`.
 
     We assert the columms are the same across splits if it's a `DatasetDict`.
@@ -184,12 +187,20 @@ def get_columns_all_equal(dataset: Union[Dataset, DatasetDict]) -> list[str]:
     Returns:
         A list of columns.
     """
-    if isinstance(dataset, DatasetDict):
-        cols_by_split = dataset.column_names.values()
+    if isinstance(dataset, (DatasetDict, IterableDatasetDict)):
+        if isinstance(dataset, DatasetDict):
+            cols_by_split = dataset.column_names.values()
+        else:
+            cols_by_split = list(dataset.column_names for dataset in dataset.values())
         columns = next(iter(cols_by_split))
         if not all(cols == columns for cols in cols_by_split):
             raise ValueError("All splits must have the same columns")
         return columns
+    elif dataset.column_names is None:
+        raise ValueError(
+            "Cannot determine columns to remove. "
+            f"Dataset of type {dataset.__class__} has no columns."
+        )
 
     return dataset.column_names
 
