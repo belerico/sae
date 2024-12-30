@@ -114,38 +114,20 @@ class SaeTrainer:
         # Handle different types of lr: dict, float, or None
         self.lrs = {}
         self.pgs = []
-        if isinstance(cfg.lr, dict):
-            # Ensure that the keys of lr match the keys of the SAEs
-            if set(cfg.lr.keys()) != set(cfg.hookpoints):
-                raise ValueError(
-                    "lr dict keys must match the hookpoints. "
-                    f"Expected: {cfg.hookpoints}, got: {cfg.lr.keys()}"
-                )
-            # Create parameter groups with individual learning rates
-            for hook, sae in self.saes.items():
-                lr = cfg.lr[hook]
-                self.pgs.append(
-                    {
-                        "params": sae.parameters(),
-                        "lr": lr,
-                    }
-                )
-                self.lrs[hook] = lr
-        else:
-            for hook, sae in self.saes.items():
-                if cfg.lr is not None:
-                    lr = cfg.lr
-                else:
-                    num_latents = sae.num_latents
-                    # Compute default lr based on num_latents
-                    lr = 2e-4 / (num_latents / (2**14)) ** 0.5
-                self.pgs.append(
-                    {
-                        "params": sae.parameters(),
-                        "lr": lr,
-                    }
-                )
-                self.lrs[hook] = lr
+        for hook, sae in self.saes.items():
+            if cfg.lr is not None:
+                lr = cfg.lr
+            else:
+                num_latents = sae.num_latents
+                # Compute default lr based on num_latents
+                lr = 2e-4 / (num_latents / (2**14)) ** 0.5
+            self.pgs.append(
+                {
+                    "params": sae.parameters(),
+                    "lr": lr,
+                }
+            )
+            self.lrs[hook] = lr
 
         # Deduplicate and sort the learning rates for logging
         lrs_set = sorted(set(self.lrs.values()))
@@ -185,6 +167,7 @@ class SaeTrainer:
         )
 
         # L1 coefficient scheduler
+        self.l1_scheduler = None
         if self.cfg.sae.k <= 0:
             if not (0 <= cfg.l1_warmup_steps <= 1):
                 raise ValueError(
@@ -214,9 +197,11 @@ class SaeTrainer:
         scaling_factors = estimate_norm_scaling_factor(
             self.dataloader,
             self.model,
-            self.cfg.num_norm_estimation_tokens // dist.get_world_size()
-            if dist.is_initialized()
-            else 1,
+            (
+                self.cfg.num_norm_estimation_tokens // dist.get_world_size()
+                if dist.is_initialized()
+                else 1
+            ),
             self.cfg.hook,
             module_to_name=module_to_name,
             target_norm=self.cfg.normalize_activations,
@@ -624,29 +609,41 @@ class SaeTrainer:
         path = f"{run_path}/step_{self.global_step}"
         rank_zero = not dist.is_initialized() or dist.get_rank() == 0
         if rank_zero:
-            os.makedirs(path, exist_ok=True)
+            os.makedirs(run_path, exist_ok=True)
 
-        if rank_zero or self.cfg.distribute_modules:
+        if rank_zero:
             print("Removing old checkpoints")
-
             if self.cfg.keep_last_n_checkpoints > 0:
                 checkpoints = [f"{run_path}/{p}" for p in os.listdir(run_path) if "step" in p]
                 checkpoints = sorted(
-                    checkpoints, key=lambda x: int(x.split("_")[-1]), reverse=True
+                    checkpoints, key=lambda x: int(x.split("_")[-1]), reverse=False
                 )
-                if self.cfg.keep_last_n_checkpoints == 1:
+                print(f"Found {checkpoints} checkpoints")
+                if len(checkpoints) >= self.cfg.keep_last_n_checkpoints:
+                    to_remove = checkpoints[: -self.cfg.keep_last_n_checkpoints + 1]
+                elif self.cfg.keep_last_n_checkpoints == 1:
                     to_remove = checkpoints
                 else:
-                    to_remove = checkpoints[: -self.cfg.keep_last_n_checkpoints + 1]
+                    to_remove = []
+                print(f"Removing {to_remove} checkpoints")
                 for path_to_remove in to_remove:
-                    shutil.rmtree(f"{path_to_remove}", ignore_errors=True)
+                    shutil.rmtree(f"{path_to_remove}", ignore_errors=False)
+
+        # Gather SAEs from all ranks
+        if rank_zero or self.distribute_modules:
+            os.makedirs(path, exist_ok=True)
+            if dist.is_initialized():
+                all_saes = [None for _ in range(dist.get_world_size())]
+                dist.gather_object(self.saes, all_saes if rank_zero else None)
+            else:
+                all_saes = [self.saes]
 
             print("Saving new checkpoint")
-
-            for hook, sae in self.saes.items():
-                assert isinstance(sae, Sae)
-
-                sae.save_to_disk(f"{path}/{hook}")
+            for saes in all_saes:
+                if saes is not None:
+                    for hook, sae in saes.items():
+                        assert isinstance(sae, Sae)
+                        sae.save_to_disk(f"{path}/{hook}")
 
         if rank_zero:
             torch.save(self.lr_scheduler.state_dict(), f"{path}/lr_scheduler.pt")

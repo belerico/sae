@@ -78,7 +78,7 @@ class TrainConfig(Serializable):
     adam_betas: tuple[float, float] = (0.0, 0.999)
     """Adam betas"""
 
-    lr: dict[str, float] | float | None = None
+    lr: float | None = None
     """Base lr. If None, it is automatically chosen based on the number of latents."""
 
     lr_scheduler_name: str = "constant"
