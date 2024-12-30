@@ -476,7 +476,11 @@ class SaeTrainer:
                             {
                                 f"fvu/{name}": avg_fvu[name],
                                 f"l1/{name}": avg_l1[name],
-                                "l1/l1_coefficient": self.l1_scheduler.current_l1_coefficient,
+                                "l1/l1_coefficient": (
+                                    self.l1_scheduler.current_l1_coefficient
+                                    if self.l1_scheduler is not None
+                                    else 0.0
+                                ),
                                 f"l0/{name}": avg_l0[name],
                                 f"l2/{name}": avg_l2[name],
                                 f"dead_pct/{name}": mask.mean(dtype=torch.float32).item(),
