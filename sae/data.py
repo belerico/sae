@@ -141,25 +141,30 @@ def chunk_and_tokenize_streaming(
         columns_to_remove.remove(text_key)
 
     def generator():
-        sep_id = tokenizer.eos_token_id
-        if sep_id is None:
-            tokenizer.add_special_tokens({"eos_token": "<|endoftext|>"})
-            sep_id = tokenizer.eos_token_id
         chunk_size = min(tokenizer.model_max_length, max_seq_len)
-        buffer = [sep_id]
+        buffer = []
         for sample in data:
             # Remove unwanted columns from the sample
             sample = {key: sample[key] for key in sample if key not in columns_to_remove}
 
             text = sample[text_key]
-            tokens = tokenizer.encode(text, add_special_tokens=False)
-            buffer.extend(tokens + [sep_id])
+            tokens = tokenizer(
+                # Concatenate all the samples together, separated by the EOS token.
+                text,  # start with an eos token
+                max_length=chunk_size,
+                return_attention_mask=False,
+                return_overflowing_tokens=True,
+                truncation=True,
+                add_special_tokens=False,
+            )
+            for example in tokens["input_ids"] + tokens.pop("overflowing_tokens", []):
+                buffer.extend(example)
 
-            # Slice the buffer into chunks of max_seq_len
-            while len(buffer) >= chunk_size:
-                chunk = buffer[:chunk_size]
-                buffer = buffer[chunk_size:]
-                yield {"input_ids": torch.tensor(chunk)}
+                # Slice the buffer into chunks of max_seq_len
+                while len(buffer) >= chunk_size:
+                    chunk = buffer[:chunk_size]
+                    buffer = buffer[chunk_size:]
+                    yield {"input_ids": torch.tensor(chunk)}
 
         # Process any remaining tokens in the buffer
         while len(buffer) >= chunk_size:
