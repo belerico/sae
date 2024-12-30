@@ -1,67 +1,25 @@
 import os
 from contextlib import nullcontext, redirect_stdout
-from dataclasses import dataclass
-from multiprocessing import cpu_count
+from typing import cast
 
 import torch
 import torch.distributed as dist
-from datasets import Dataset, load_dataset
+from datasets import Dataset, DatasetDict, IterableDataset, IterableDatasetDict, load_dataset
 from safetensors.torch import load_model
-from simple_parsing import field, parse
+from simple_parsing import parse
+from torch.utils.data import DataLoader
 from transformers import AutoModel, AutoTokenizer, BitsAndBytesConfig, PreTrainedModel
 
-from .data import MemmapDataset, chunk_and_tokenize
-from .trainer import SaeTrainer, TrainConfig
+from .config import RunConfig
+from .data import MemmapDataset, chunk_and_tokenize, chunk_and_tokenize_streaming
+from .trainer import SaeTrainer
 
 
-@dataclass
-class RunConfig(TrainConfig):
-    model: str = field(
-        default="EleutherAI/pythia-160m",
-        positional=True,
-    )
-    """Name of the model to train."""
+def load_artifacts(
+    args: RunConfig, rank: int
+) -> tuple[PreTrainedModel, Dataset | IterableDataset | MemmapDataset]:
+    ddp = os.environ.get("LOCAL_RANK") is not None
 
-    dataset: str = field(
-        default="togethercomputer/RedPajama-Data-1T-Sample",
-        positional=True,
-    )
-    """Path to the dataset to use for training."""
-
-    split: str = "train"
-    """Dataset split to use for training."""
-
-    ctx_len: int = 2048
-    """Context length to use for training."""
-
-    hf_token: str | None = None
-    """Huggingface API token for downloading models."""
-
-    revision: str | None = None
-    """Model revision to use for training."""
-
-    load_in_8bit: bool = False
-    """Load the model in 8-bit mode."""
-
-    max_examples: int | None = None
-    """Maximum number of examples to use for training."""
-
-    resume: bool = False
-    """Whether to try resuming from the checkpoint present at `run_name`."""
-
-    finetune: str | None = None
-    """Path to pretrained SAEs to finetune."""
-
-    seed: int = 42
-    """Random seed for shuffling the dataset."""
-
-    data_preprocessing_num_proc: int = field(
-        default_factory=lambda: cpu_count() // 2,
-    )
-    """Number of processes to use for preprocessing data"""
-
-
-def load_artifacts(args: RunConfig, rank: int) -> tuple[PreTrainedModel, Dataset | MemmapDataset]:
     if args.load_in_8bit:
         dtype = torch.float16
     elif torch.cuda.is_bf16_supported():
@@ -82,15 +40,17 @@ def load_artifacts(args: RunConfig, rank: int) -> tuple[PreTrainedModel, Dataset
 
     # For memmap-style datasets
     if args.dataset.endswith(".bin"):
-        dataset = MemmapDataset(args.dataset, args.ctx_len, args.max_examples)
+        dataset = MemmapDataset(args.dataset, args.max_seq_len, args.max_examples)
     else:
         # For Huggingface datasets
         try:
             dataset = load_dataset(
                 args.dataset,
+                name=args.dataset_name,
                 split=args.split,
                 # TODO: Maybe set this to False by default? But RPJ requires it.
                 trust_remote_code=True,
+                streaming=args.streaming,
             )
         except ValueError as e:
             # Automatically use load_from_disk if appropriate
@@ -98,26 +58,41 @@ def load_artifacts(args: RunConfig, rank: int) -> tuple[PreTrainedModel, Dataset
                 dataset = Dataset.load_from_disk(args.dataset, keep_in_memory=False)
             else:
                 raise e
+        if isinstance(dataset, (DatasetDict, IterableDatasetDict)):
+            raise ValueError("DatasetDict and IterableDatasetDict datasets are supported for now.")
 
-        assert isinstance(dataset, Dataset)
-        if "input_ids" not in dataset.column_names:
+        # Shard the dataset across all ranks
+        if ddp and args.streaming:
+            dataset = dataset.shard(dist.get_world_size(), rank)
+
+        # assert isinstance(dataset, Dataset)
+        column_names = dataset.column_names
+        if column_names is None:
+            raise ValueError("Dataset does not have column names.")
+        if "input_ids" not in column_names:
             tokenizer = AutoTokenizer.from_pretrained(args.model, token=args.hf_token)
-            dataset = chunk_and_tokenize(
-                dataset,
-                tokenizer,
-                max_seq_len=args.ctx_len,
-                num_proc=args.data_preprocessing_num_proc,
-            )
+            if args.streaming:
+                dataset = cast(IterableDataset, dataset)
+                dataset = chunk_and_tokenize_streaming(
+                    dataset,
+                    tokenizer,
+                    max_seq_len=args.max_seq_len,
+                    return_final_batch=False,
+                )
+            else:
+                dataset = cast(Dataset, dataset)
+                dataset = chunk_and_tokenize(
+                    dataset,
+                    tokenizer,
+                    max_seq_len=args.max_seq_len,
+                    num_proc=args.data_preprocessing_num_proc,
+                    return_final_batch=False,
+                )
         else:
             print("Dataset already tokenized; skipping tokenization.")
 
         print(f"Shuffling dataset with seed {args.seed}")
         dataset = dataset.shuffle(args.seed)
-
-        dataset = dataset.with_format("torch")
-        if limit := args.max_examples:
-            dataset = dataset.select(range(limit))
-
     return model, dataset
 
 
@@ -142,14 +117,16 @@ def run():
         dist.barrier()
         if rank != 0:
             model, dataset = load_artifacts(args, rank)
-        dataset = dataset.shard(dist.get_world_size(), rank)
+        if not args.streaming or args.dataset.endswith(".bin"):
+            dataset = dataset.shard(dist.get_world_size(), rank)
 
     # Prevent ranks other than 0 from printing
     with nullcontext() if rank == 0 else redirect_stdout(None):
         print(f"Training on '{args.dataset}' (split '{args.split}')")
         print(f"Storing model weights in {model.dtype}")
 
-        trainer = SaeTrainer(args, dataset, model)
+        dataloader = DataLoader(dataset, batch_size=args.batch_size)
+        trainer = SaeTrainer(args, dataloader, model)
         if args.resume:
             trainer.load_state(args.run_name or "sae-ckpts")
         elif args.finetune:

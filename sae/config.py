@@ -1,6 +1,7 @@
 from dataclasses import dataclass
+from multiprocessing import cpu_count
 
-from simple_parsing import Serializable, list_field
+from simple_parsing import Serializable, field, list_field
 
 from sae.hooks import HookWithKwargs, standard_hook
 
@@ -59,9 +60,6 @@ class TrainConfig(Serializable):
 
     num_training_tokens: int = 1_000_000
     """Number of total training tokens"""
-
-    cycle_iterator: bool = True
-    """Whether to use a CycleIterator"""
 
     grad_acc_steps: int = 1
     """Number of steps over which to accumulate gradients."""
@@ -142,3 +140,50 @@ class TrainConfig(Serializable):
         ), "Cannot specify both `layers` and `layer_stride`."
         if self.keep_last_n_checkpoints == 0:
             raise ValueError("`keep_last_n_checkpoints` must be at least 1 or -1.")
+
+
+@dataclass
+class RunConfig(TrainConfig):
+    model: str = field(
+        default="EleutherAI/pythia-160m",
+        positional=True,
+    )
+    """Name of the model to train."""
+
+    dataset: str = field(
+        default="togethercomputer/RedPajama-Data-1T-Sample",
+        positional=True,
+    )
+    """Path to the dataset to use for training."""
+
+    dataset_name: str | None = None
+    """Name of the dataset."""
+
+    split: str = "train"
+    """Dataset split to use for training."""
+
+    hf_token: str | None = None
+    """Huggingface API token for downloading models."""
+
+    revision: str | None = None
+    """Model revision to use for training."""
+
+    load_in_8bit: bool = False
+    """Load the model in 8-bit mode."""
+
+    resume: bool = False
+    """Whether to try resuming from the checkpoint present at `run_name`."""
+
+    finetune: str | None = None
+    """Path to pretrained SAEs to finetune."""
+
+    seed: int = 42
+    """Random seed for shuffling the dataset."""
+
+    data_preprocessing_num_proc: int = field(
+        default_factory=lambda: cpu_count() // 2,
+    )
+    """Number of processes to use for preprocessing data"""
+
+    streaming: bool = True
+    """Whether to stream the dataset or not."""
