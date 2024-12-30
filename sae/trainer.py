@@ -619,10 +619,10 @@ class SaeTrainer:
                     checkpoints, key=lambda x: int(x.split("_")[-1]), reverse=False
                 )
                 print(f"Found {checkpoints} checkpoints")
-                if len(checkpoints) >= self.cfg.keep_last_n_checkpoints:
-                    to_remove = checkpoints[: -self.cfg.keep_last_n_checkpoints + 1]
-                elif self.cfg.keep_last_n_checkpoints == 1:
+                if self.cfg.keep_last_n_checkpoints == 1:
                     to_remove = checkpoints
+                elif len(checkpoints) >= self.cfg.keep_last_n_checkpoints:
+                    to_remove = checkpoints[: -self.cfg.keep_last_n_checkpoints + 1]
                 else:
                     to_remove = []
                 print(f"Removing {to_remove} checkpoints")
