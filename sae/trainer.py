@@ -377,6 +377,10 @@ class SaeTrainer:
                     running_mean_act_norm[name] = update_running_mean(
                         running_mean_act_norm[name], l2_norm, batch_idx + 1
                     )
+                running_mean_act_norm[name] = float(
+                    self.maybe_all_reduce(running_mean_act_norm[name], "mean")
+                )
+                avg_act_norm[name] = float(self.maybe_all_reduce(l2_norm, "mean"))
 
                 acc_steps = self.cfg.grad_acc_steps * self.cfg.micro_acc_steps
                 denom = acc_steps * self.cfg.wandb_log_frequency
