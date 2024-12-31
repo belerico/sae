@@ -282,6 +282,7 @@ class SaeTrainer:
         num_tokens_in_step = 0
 
         # For logging purposes
+        elapsed_tokens = 0
         avg_l1 = defaultdict(float)
         avg_l0 = defaultdict(float)
         avg_l2 = defaultdict(float)
@@ -307,7 +308,9 @@ class SaeTrainer:
             hidden_dict.clear()
 
             # Bookkeeping for dead feature detection
-            num_tokens_in_step += batch["input_ids"].numel()
+            tokens_in_batch = batch["input_ids"].numel()
+            elapsed_tokens += tokens_in_batch * (dist.get_world_size() if ddp else 1)
+            num_tokens_in_step += tokens_in_batch
 
             # Forward pass on the model to get the next batch of activations
             handles = [
@@ -504,6 +507,9 @@ class SaeTrainer:
                             f"norm/running_mean_act_norm_{name}": running_mean_act_norm[name]
                             for name in self.saes
                         }
+                    )
+                    info.update(
+                        {"tokens/elapsed": elapsed_tokens * (dist.get_world_size() if ddp else 1)}
                     )
 
                     avg_auxk_loss.clear()
