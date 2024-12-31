@@ -53,7 +53,8 @@ class TrainConfig(Serializable):
 
     batch_size: int = 8
     """Batch size measured in sequences.
-    The effective SAE batch-size is `cfg.batch_size * cfg.max_seq_len`"""
+    The effective SAE batch-size is `cfg.batch_size * L`, where `L` is the sequence length after
+    the `cfg.hook` function has been applied."""
 
     max_seq_len: int = 1024
     """The maximum sequence length"""
@@ -187,3 +188,6 @@ class RunConfig(TrainConfig):
 
     streaming: bool = True
     """Whether to stream the dataset or not."""
+
+    text_key: str = "text"
+    """Key to use for tokenizing the dataset."""

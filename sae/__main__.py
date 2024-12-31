@@ -40,7 +40,7 @@ def load_artifacts(
 
     # For memmap-style datasets
     if args.dataset.endswith(".bin"):
-        dataset = MemmapDataset(args.dataset, args.max_seq_len, args.max_examples)
+        dataset = MemmapDataset(args.dataset, args.max_seq_len)
     else:
         # For Huggingface datasets
         try:
@@ -62,10 +62,11 @@ def load_artifacts(
             raise ValueError("DatasetDict and IterableDatasetDict datasets are supported for now.")
 
         # Shard the dataset across all ranks
+        # The shard happens before the `chunk_and_toikenize` otherwise
+        # we lose the sharding.
         if ddp and args.streaming:
             dataset = dataset.shard(dist.get_world_size(), rank)
 
-        # assert isinstance(dataset, Dataset)
         column_names = dataset.column_names
         if column_names is None:
             raise ValueError("Dataset does not have column names.")
@@ -76,6 +77,7 @@ def load_artifacts(
                 dataset = chunk_and_tokenize_streaming(
                     dataset,
                     tokenizer,
+                    text_key=args.text_key,
                     max_seq_len=args.max_seq_len,
                     return_final_batch=False,
                 )
@@ -84,6 +86,7 @@ def load_artifacts(
                 dataset = chunk_and_tokenize(
                     dataset,
                     tokenizer,
+                    text_key=args.text_key,
                     max_seq_len=args.max_seq_len,
                     num_proc=args.data_preprocessing_num_proc,
                     return_final_batch=False,
