@@ -1,6 +1,7 @@
 """Tools for tokenizing and manipulating text datasets."""
 
 import math
+import warnings
 from multiprocessing import cpu_count
 from typing import List, TypeVar, Union, cast
 
@@ -11,6 +12,17 @@ from torch.utils.data import Dataset as TorchDataset
 from transformers import PreTrainedTokenizerBase
 
 T = TypeVar("T", Dataset, DatasetDict)
+
+
+def get_separator_token(tokenizer: PreTrainedTokenizerBase) -> str:
+    """Get the separator token from the tokenizer."""
+    sep = tokenizer.eos_token or "<|endoftext|>"
+    if isinstance(sep, list):
+        warnings.warn(
+            "The tokenizer's EOS token is a list. Using the first element:" f" {sep[0]}."
+        )
+        sep = sep[0]
+    return sep
 
 
 def chunk_and_tokenize(
@@ -45,11 +57,13 @@ def chunk_and_tokenize(
     Returns:
         The chunked and tokenized dataset.
     """
+    if isinstance(data, (IterableDataset, IterableDatasetDict)):
+        raise ValueError("Iterable datasets are not supported.")
 
     def _tokenize_fn(x: dict[str, list]):
-        chunk_size = min(tokenizer.model_max_length, max_seq_len)
-        sep = tokenizer.eos_token or "<|endoftext|>"
+        sep = get_separator_token(tokenizer)
         joined_text = sep.join([""] + x[text_key])
+        chunk_size = min(tokenizer.model_max_length, max_seq_len)
         output = tokenizer(
             # Concatenate all the samples together, separated by the EOS token.
             joined_text,  # start with an eos token
@@ -105,7 +119,7 @@ def chunk_and_tokenize(
 
 
 def chunk_and_tokenize_streaming(
-    data: IterableDataset | IterableDatasetDict,
+    data: Dataset | DatasetDict | IterableDataset | IterableDatasetDict,
     tokenizer: PreTrainedTokenizerBase,
     *,
     format: str = "torch",
@@ -137,8 +151,8 @@ def chunk_and_tokenize_streaming(
         columns_to_remove.remove(text_key)
 
     def generator():
-        chunk_size = min(tokenizer.model_max_length, max_seq_len)
         buffer = []
+        chunk_size = min(tokenizer.model_max_length, max_seq_len)
         for sample in data:
             # Remove unwanted columns from the sample
             sample = {key: sample[key] for key in sample if key not in columns_to_remove}
