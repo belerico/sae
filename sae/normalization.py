@@ -2,6 +2,7 @@ from typing import Dict
 
 import numpy as np
 import torch
+from accelerate.utils import send_to_device
 from torch.utils.data import DataLoader
 
 from sae.hooks import HookWithKwargs, forward_hook_wrapper
@@ -47,7 +48,7 @@ def estimate_norm_scaling_factor(
         ]
         try:
             with torch.no_grad():
-                model(batch["input_ids"].to(device))
+                model(**send_to_device(batch, device))
         finally:
             for handle in handles:
                 handle.remove()
