@@ -654,6 +654,8 @@ class SaeTrainer:
                         assert isinstance(sae, Sae)
                         sae.save_to_disk(f"{path}/{hook}")
 
+        # We can save the optimizer and scheduler states only from rank 0
+        # because they are the same across all ranks
         if rank_zero:
             torch.save(self.lr_scheduler.state_dict(), f"{path}/lr_scheduler.pt")
             torch.save(self.optimizer.state_dict(), f"{path}/optimizer.pt")
