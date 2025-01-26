@@ -92,7 +92,6 @@ if __name__ == "__main__":
         l1_warmup_steps=0.0,
         max_seq_len=max_seq_len,
         use_l2_loss=True,
-        cycle_iterator=True,
         num_training_tokens=1_000_000_000,
         normalize_activations=1,
         num_norm_estimation_tokens=2_000_000,
