@@ -55,9 +55,7 @@ class ClusterSaeTrainer:
                 N = max(max(cluster) for cluster in cfg.clusters.values()) + 1
                 cfg.layers = list(range(0, N, cfg.layer_stride))
             else:
-                raise ValueError(
-                    "No clusters specified. " "Please specify the `clusters` parameter."
-                )
+                raise ValueError("No clusters specified. Please specify the `clusters` parameter.")
 
             # Now convert layers to hookpoints
             layers_name, _ = get_layer_list(model)
@@ -99,9 +97,9 @@ class ClusterSaeTrainer:
         self.model = model
         device = model.device
         self.saes = {
-            cluster_name: Sae(cluster_shapes[cluster_name][0], cfg.sae, device)
+            cluster_name: Sae(cluster_shapes[cluster_name][0][-1], cfg.sae, device)
             for cluster_name in cfg.cluster_hookpoints
-        }
+        }  # We suppose the input shapes are the same
 
         # Dataloader
         self.dataloader = dataloader
@@ -536,12 +534,9 @@ class ClusterSaeTrainer:
                             info[f"multi_topk_fvu/{name}"] = avg_multi_topk_fvu[name]
 
                     info.update(
-                        {f"norm/avg_act_norm_{name}": avg_act_norm[name] for name in self.saes}
-                    )
-                    info.update(
                         {
                             f"norm/running_mean_act_norm_{name}": running_mean_act_norm[name]
-                            for name in self.saes
+                            for name in self.cfg.hookpoints
                         }
                     )
                     info.update(

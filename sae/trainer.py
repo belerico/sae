@@ -83,6 +83,7 @@ class SaeTrainer:
         # SAEs
         self.model = model
         device = model.device
+        print(f"Input shapes: {input_shapes}")
         self.saes = {
             hook: Sae(input_shapes[hook][-1], cfg.sae, device) for hook in self.local_hookpoints()
         }
@@ -520,9 +521,6 @@ class SaeTrainer:
                         if self.cfg.sae.multi_topk:
                             info[f"multi_topk_fvu/{name}"] = avg_multi_topk_fvu[name]
 
-                    info.update(
-                        {f"norm/avg_act_norm_{name}": avg_act_norm[name] for name in self.saes}
-                    )
                     info.update(
                         {
                             f"norm/running_mean_act_norm_{name}": running_mean_act_norm[name]
