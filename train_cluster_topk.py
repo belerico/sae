@@ -4,6 +4,7 @@ from torch.utils.data import DataLoader
 from transformers import AutoModel
 
 from sae import ClusterSaeTrainer, SaeConfig, TrainConfig
+from sae.hooks import from_tokens
 
 if __name__ == "__main__":
     model_name = "EleutherAI/pythia-160m-deduped"
@@ -59,11 +60,6 @@ if __name__ == "__main__":
         split="train",
         trust_remote_code=True,
     )
-
-    def from_tokens(x):
-        return {
-            "input_ids": torch.stack(list(torch.tensor(example["tokens"]) for example in x), dim=0)
-        }
 
     data_loader = DataLoader(
         dataset,

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, Protocol, Tuple, TypeVar
+from typing import Any, Callable, Dict, Mapping, Protocol, Sequence, Tuple, TypeVar
 
+import torch
 from torch import Tensor, nn
 from torch.nn import Module
 
@@ -61,3 +62,11 @@ def standard_hook(
 
     name = module_to_name[module]
     hidden_dict[name] = outputs.flatten(0, 1)
+
+
+def from_tokens(examples: Sequence[Mapping[str, Any]]) -> Mapping[str, Tensor]:
+    return {
+        "input_ids": torch.stack(
+            list(torch.tensor(example["tokens"]) for example in examples), dim=0
+        )
+    }

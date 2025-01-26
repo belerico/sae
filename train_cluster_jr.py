@@ -4,13 +4,14 @@ from torch.utils.data import DataLoader
 from transformers import AutoModel
 
 from sae import ClusterSaeTrainer, SaeConfig, TrainConfig
+from sae.hooks import from_tokens
 
 if __name__ == "__main__":
     model_name = "EleutherAI/pythia-160m-deduped"
     l1_coefficient = 0.5
-    max_seq_len = 1024
+    max_seq_len = 64
     target_l0 = 128
-    batch_size = 4
+    batch_size = 1
     lr = 7e-4
 
     # Define pythia-160m-clusters
@@ -59,11 +60,6 @@ if __name__ == "__main__":
         trust_remote_code=True,
     )
 
-    def from_tokens(x):
-        return {
-            "input_ids": torch.stack(list(torch.tensor(example["tokens"]) for example in x), dim=0)
-        }
-
     data_loader = DataLoader(
         dataset,
         collate_fn=from_tokens,
@@ -94,7 +90,6 @@ if __name__ == "__main__":
         l1_warmup_steps=0.1,
         max_seq_len=max_seq_len,
         use_l2_loss=True,
-        cycle_iterator=True,
         num_training_tokens=1_000_000_000,
         normalize_activations=1,
         num_norm_estimation_tokens=2_000_000,
@@ -104,7 +99,7 @@ if __name__ == "__main__":
         adam_betas=(0.0, 0.999),
         adam_epsilon=1e-8,
         clusters=unique_cluster_flatten,
-        micro_acc_steps=1
+        micro_acc_steps=1,
     )
     trainer = ClusterSaeTrainer(cfg, data_loader, model)
     trainer.fit()

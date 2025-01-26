@@ -1,9 +1,10 @@
 from dataclasses import dataclass
 from multiprocessing import cpu_count
+from typing import Any, Callable, Dict, List
 
 from simple_parsing import Serializable, field, list_field
 
-from sae.hooks import HookWithKwargs, standard_hook
+from sae.hooks import HookWithKwargs, from_tokens, standard_hook
 
 
 @dataclass
@@ -201,3 +202,6 @@ class RunConfig(TrainConfig):
 
     text_key: str = "text"
     """Key to use for tokenizing the dataset."""
+
+    collate_fn: Callable[[List[Dict[str, Any]]], Any] = from_tokens
+    """Collate function to use for the DataLoader."""

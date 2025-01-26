@@ -1,4 +1,5 @@
 import os
+import warnings
 from contextlib import nullcontext, redirect_stdout
 from typing import cast
 
@@ -17,7 +18,7 @@ from .trainer import SaeTrainer
 
 def load_artifacts(
     args: RunConfig, rank: int
-) -> tuple[PreTrainedModel, Dataset | IterableDataset | MemmapDataset]:
+) -> tuple[PreTrainedModel, Dataset | IterableDataset | MemmapDataset, bool]:
     ddp = os.environ.get("LOCAL_RANK") is not None
 
     if args.load_in_8bit:
@@ -40,6 +41,7 @@ def load_artifacts(
 
     # For memmap-style datasets
     if args.dataset.endswith(".bin"):
+        already_tokenized = False
         dataset = MemmapDataset(args.dataset, args.max_seq_len)
     else:
         # For Huggingface datasets
@@ -70,6 +72,7 @@ def load_artifacts(
         column_names = dataset.column_names
         if column_names is None:
             raise ValueError("Dataset does not have column names.")
+        already_tokenized = len({"input_ids", "tokens"} & set(column_names)) > 0
         if "input_ids" not in column_names:
             tokenizer = AutoTokenizer.from_pretrained(args.model, token=args.hf_token)
             if args.streaming:
@@ -92,11 +95,11 @@ def load_artifacts(
                     return_final_batch=False,
                 )
         else:
-            print("Dataset already tokenized; skipping tokenization.")
+            warnings.warn("Dataset already tokenized; skipping tokenization.")
 
         print(f"Shuffling dataset with seed {args.seed}")
         dataset = dataset.shuffle(args.seed)
-    return model, dataset
+    return model, dataset, already_tokenized
 
 
 def run():
@@ -115,11 +118,11 @@ def run():
 
     # Awkward hack to prevent other ranks from duplicating data preprocessing
     if not ddp or rank == 0:
-        model, dataset = load_artifacts(args, rank)
+        model, dataset, already_tokenized = load_artifacts(args, rank)
     if ddp:
         dist.barrier()
         if rank != 0:
-            model, dataset = load_artifacts(args, rank)
+            model, dataset, already_tokenized = load_artifacts(args, rank)
         if not args.streaming or args.dataset.endswith(".bin"):
             dataset = dataset.shard(dist.get_world_size(), rank)
 
@@ -128,7 +131,12 @@ def run():
         print(f"Training on '{args.dataset}' (split '{args.split}')")
         print(f"Storing model weights in {model.dtype}")
 
-        dataloader = DataLoader(dataset, batch_size=args.batch_size)
+        if already_tokenized:
+            dataloader = DataLoader(
+                dataset, batch_size=args.batch_size, collate_fn=args.collate_fn
+            )
+        else:
+            dataloader = DataLoader(dataset, batch_size=args.batch_size)
         trainer = SaeTrainer(args, dataloader, model)
         if args.resume:
             trainer.load_state(args.run_name or "sae-ckpts")
