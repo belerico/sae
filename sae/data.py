@@ -1,8 +1,9 @@
 """Tools for tokenizing and manipulating text datasets."""
 
 import math
+import warnings
 from multiprocessing import cpu_count
-from typing import Optional, Tuple, TypeVar, Union
+from typing import List, TypeVar, Union, cast
 
 import numpy as np
 import torch
@@ -10,7 +11,18 @@ from datasets import Dataset, DatasetDict, IterableDataset, IterableDatasetDict
 from torch.utils.data import Dataset as TorchDataset
 from transformers import PreTrainedTokenizerBase
 
-T = TypeVar("T", bound=Union[Dataset, DatasetDict])
+T = TypeVar("T", Dataset, DatasetDict)
+
+
+def get_separator_token(tokenizer: PreTrainedTokenizerBase) -> str:
+    """Get the separator token from the tokenizer."""
+    sep = tokenizer.eos_token or "<|endoftext|>"
+    if isinstance(sep, list):
+        warnings.warn(
+            "The tokenizer's EOS token is a list. Using the first element:" f" {sep[0]}."
+        )
+        sep = sep[0]
+    return sep
 
 
 def chunk_and_tokenize(
@@ -45,19 +57,22 @@ def chunk_and_tokenize(
     Returns:
         The chunked and tokenized dataset.
     """
+    if isinstance(data, (IterableDataset, IterableDatasetDict)):
+        raise ValueError("Iterable datasets are not supported.")
 
     def _tokenize_fn(x: dict[str, list]):
+        sep = get_separator_token(tokenizer)
+        joined_text = sep.join(x[text_key])
         chunk_size = min(tokenizer.model_max_length, max_seq_len)
-        sep = tokenizer.eos_token or "<|endoftext|>"
-        joined_text = sep.join([""] + x[text_key])
         output = tokenizer(
             # Concatenate all the samples together, separated by the EOS token.
-            joined_text,  # start with an eos token
+            joined_text,
             max_length=chunk_size,
             return_attention_mask=False,
             return_overflowing_tokens=True,
             truncation=True,
         )
+        output.pop("overflow_to_sample_mapping", None)
 
         if overflow := output.pop("overflowing_tokens", None):
             # Slow Tokenizers return unnested lists of ints
@@ -86,7 +101,7 @@ def chunk_and_tokenize(
 
         return output
 
-    data = data.map(
+    mapped = data.map(
         _tokenize_fn,
         # Batching is important for ensuring that we don't waste tokens
         # since we always throw away the last element of the batch we
@@ -97,16 +112,20 @@ def chunk_and_tokenize(
         remove_columns=get_columns_all_equal(data),
         load_from_cache_file=load_from_cache_file,
     )
-    return data.with_format(format, columns=["input_ids"])
+    # We know that "mapped" has the same 'shape' (Dataset vs. DatasetDict)
+    # as the input "data", so we cast back to T:
+    mapped = cast(T, mapped)
+    return mapped.with_format(format, columns=["input_ids"])
 
 
 def chunk_and_tokenize_streaming(
-    data: Tuple[DatasetDict | Dataset | IterableDatasetDict | IterableDataset],
+    data: Dataset | DatasetDict | IterableDataset | IterableDatasetDict,
     tokenizer: PreTrainedTokenizerBase,
     *,
+    format: str = "torch",
     text_key: str = "text",
     max_seq_len: int = 2048,
-    eos_token_id: Optional[int] = None,
+    return_final_batch: bool = False,
 ) -> IterableDataset:
     """Perform GPT-style chunking and tokenization on a streaming dataset.
 
@@ -117,9 +136,11 @@ def chunk_and_tokenize_streaming(
     Args:
         data: The streaming dataset to chunk and tokenize.
         tokenizer: The tokenizer to use.
+        format: The format to return the dataset in, passed to `Dataset.with_format`.
         text_key: The key in the dataset to use as the text to tokenize.
         max_seq_len: The maximum length of a chunk of input ids.
-        eos_token_id: The id of the eos token. If None, will use tokenizer.eos_token_id.
+        return_final_batch: Whether to return the final batch, which may be smaller
+            than the others.
 
     Returns:
         An IterableDataset over the tokenized chunks.
@@ -131,34 +152,43 @@ def chunk_and_tokenize_streaming(
 
     def generator():
         buffer = []
+        chunk_size = min(tokenizer.model_max_length, max_seq_len)
         for sample in data:
             # Remove unwanted columns from the sample
             sample = {key: sample[key] for key in sample if key not in columns_to_remove}
 
-            text = sample[text_key]
-            tokens = tokenizer.encode(text, add_special_tokens=False)
-            buffer.extend(tokens)
+            tokens = tokenizer(
+                sample[text_key],
+                max_length=chunk_size,
+                return_attention_mask=False,
+                return_overflowing_tokens=True,
+                truncation=True,
+            )
+            for example in tokens["input_ids"] + tokens.pop("overflowing_tokens", []):
+                buffer.extend(example)
 
-            # Slice the buffer into chunks of max_seq_len
-            while len(buffer) >= max_seq_len:
-                chunk = buffer[:max_seq_len]
-                buffer = buffer[max_seq_len:]
-                yield {"input_ids": torch.tensor(chunk)}
+                # Slice the buffer into chunks of max_seq_len
+                while len(buffer) >= chunk_size:
+                    chunk = buffer[:chunk_size]
+                    buffer = buffer[chunk_size:]
+                    yield {"input_ids": chunk}
 
         # Process any remaining tokens in the buffer
-        while len(buffer) >= max_seq_len:
-            chunk = buffer[:max_seq_len]
-            buffer = buffer[max_seq_len:]
-            yield {"input_ids": torch.tensor(chunk)}
+        while len(buffer) >= chunk_size:
+            chunk = buffer[:chunk_size]
+            buffer = buffer[chunk_size:]
+            yield {"input_ids": chunk}
 
         # Yield the final chunk if any tokens are left
-        if buffer:
-            yield {"input_ids": torch.tensor(buffer)}
+        if buffer and return_final_batch:
+            yield {"input_ids": buffer}
 
-    return IterableDataset.from_generator(generator)
+    return IterableDataset.from_generator(generator).with_format(format)
 
 
-def get_columns_all_equal(dataset: Union[Dataset, DatasetDict]) -> list[str]:
+def get_columns_all_equal(
+    dataset: Union[Dataset, DatasetDict, IterableDataset, IterableDatasetDict]
+) -> List[str]:
     """Get a single list of columns in a `Dataset` or `DatasetDict`.
 
     We assert the columms are the same across splits if it's a `DatasetDict`.
@@ -169,12 +199,20 @@ def get_columns_all_equal(dataset: Union[Dataset, DatasetDict]) -> list[str]:
     Returns:
         A list of columns.
     """
-    if isinstance(dataset, DatasetDict):
-        cols_by_split = dataset.column_names.values()
+    if isinstance(dataset, (DatasetDict, IterableDatasetDict)):
+        if isinstance(dataset, DatasetDict):
+            cols_by_split = dataset.column_names.values()
+        else:
+            cols_by_split = list(dataset.column_names for dataset in dataset.values())
         columns = next(iter(cols_by_split))
         if not all(cols == columns for cols in cols_by_split):
             raise ValueError("All splits must have the same columns")
         return columns
+    elif dataset.column_names is None:
+        raise ValueError(
+            "Cannot determine columns to remove. "
+            f"Dataset of type {dataset.__class__} has no columns."
+        )
 
     return dataset.column_names
 

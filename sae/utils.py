@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-from functools import partial
 from typing import TYPE_CHECKING, Any, Dict, Iterable, Type, TypeVar, cast
 
 import torch
@@ -9,6 +8,8 @@ from accelerate.utils import send_to_device
 from torch import Tensor, nn
 from torch.utils.data import DataLoader
 from transformers import PreTrainedModel
+
+from sae.hooks import forward_hook_wrapper
 
 if TYPE_CHECKING:
     from .config import TrainConfig
@@ -62,21 +63,6 @@ def get_lr_scheduler(
             "The supported schedulers are 'constant', 'linear', and 'cosine'."
         )
     return scheduler
-
-
-def standard_hook(
-    module: nn.Module,
-    _,
-    outputs,
-    module_to_name: Dict[nn.Module, str],
-    hidden_dict: Dict[str, Tensor],
-):
-    # Maybe unpack tuple outputs
-    if isinstance(outputs, tuple):
-        outputs = outputs[0]
-
-    name = module_to_name[module]
-    hidden_dict[name] = outputs.flatten(0, 1)
 
 
 class L1Scheduler:
@@ -225,24 +211,23 @@ def resolve_widths(
     cfg: TrainConfig,
     model: PreTrainedModel,
     module_names: list[str],
-    dim: int = -1,
-    dl: DataLoader | None = None,
-) -> dict[str, int]:
+    dataloader: DataLoader | None = None,
+) -> dict[str, torch.Size]:
     """Find number of output dimensions for the specified modules."""
     module_to_name = {model.get_submodule(name): name for name in module_names}
     hidden_dict: Dict[str, Tensor] = {}
 
-    hook = partial(
+    hook = forward_hook_wrapper(
         cfg.hook,
         module_to_name=module_to_name,
         hidden_dict=hidden_dict,
     )
 
     handles = [mod.register_forward_hook(hook) for mod in module_to_name]
-    if dl is None:
+    if dataloader is None:
         dummy = model.dummy_inputs
     else:
-        dummy = next(iter(dl))
+        dummy = next(iter(dataloader))
     dummy = send_to_device(dummy, model.device)
     try:
         model(**dummy)
@@ -250,7 +235,7 @@ def resolve_widths(
         for handle in handles:
             handle.remove()
 
-    shapes = {name: hidden.shape[dim] for name, hidden in hidden_dict.items()}
+    shapes = {name: hidden.shape for name, hidden in hidden_dict.items()}
     return shapes
 
 

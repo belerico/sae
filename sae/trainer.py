@@ -5,10 +5,10 @@ import warnings
 from collections import defaultdict
 from dataclasses import asdict
 from fnmatch import fnmatchcase
-from functools import partial
 
 import torch
 import torch.distributed as dist
+from accelerate.utils import send_to_device
 from natsort import natsorted
 from safetensors.torch import load_model
 from torch import Tensor
@@ -18,6 +18,7 @@ from tqdm.auto import tqdm
 from transformers import PreTrainedModel
 
 from .config import TrainConfig
+from .hooks import forward_hook_wrapper, standard_hook
 from .normalization import estimate_norm_scaling_factor
 from .sae import Sae
 from .utils import (
@@ -27,7 +28,6 @@ from .utils import (
     get_layer_list,
     get_lr_scheduler,
     resolve_widths,
-    standard_hook,
 )
 
 
@@ -35,7 +35,7 @@ class SaeTrainer:
     def __init__(
         self,
         cfg: TrainConfig,
-        dl: DataLoader,
+        dataloader: DataLoader,
         model: PreTrainedModel,
     ):
         if cfg.hook is None:
@@ -65,38 +65,40 @@ class SaeTrainer:
         # Distribute modules
         self.cfg = cfg
         self.distribute_modules()
-        N = len(cfg.hookpoints)
-        device = model.device
-        input_widths = resolve_widths(cfg, model, cfg.hookpoints, dl=dl)
-        unique_widths = set(input_widths.values())
-        if cfg.distribute_modules and len(unique_widths) > 1:
+
+        # Check shapes
+        input_shapes = resolve_widths(cfg, model, cfg.hookpoints, dataloader=dataloader)
+        unique_shapes = set(input_shapes.values())
+        if cfg.distribute_modules and len(unique_shapes) > 1:
             # dist.all_to_all requires tensors to have the same shape across ranks
             raise ValueError(
                 f"All modules must output tensors of the same shape when using "
-                f"`distribute_modules=True`, got {unique_widths}"
+                f"`distribute_modules=True`, got {unique_shapes}"
             )
+        # Moreover, we request that the hook returns 2D tensors of shape B x D
+        for shape in input_shapes.values():
+            if len(shape) != 2:
+                raise ValueError(f"The hook must return 2D tensors of shape B x D, got {shape}")
+
+        # SAEs
         self.model = model
+        device = model.device
         self.saes = {
-            hook: Sae(input_widths[hook], cfg.sae, device) for hook in self.local_hookpoints()
+            hook: Sae(input_shapes[hook][-1], cfg.sae, device) for hook in self.local_hookpoints()
         }
 
         # Dataloader
-        self.dl = dl
-        shapes = resolve_widths(cfg, model, cfg.hookpoints, dim=0, dl=self.dl)
-        real_seq_len = list(shapes.values())[0] // cfg.batch_size
+        self.dataloader = dataloader
+        real_seq_len = list(unique_shapes)[0][0] // cfg.batch_size
         print(
             f"The specified maximum sequence length is {cfg.max_seq_len}. "
             f"The real sequence length after the SAE hook is {real_seq_len}"
         )
-        if cfg.cycle_iterator:
-            self.num_training_tokens = cfg.num_training_tokens
-            self.dl = CycleIterator(self.dl)
-        else:
-            self.num_training_tokens = min(
-                cfg.num_training_tokens, len(self.dl) * real_seq_len * cfg.batch_size
-            )
+        self.num_training_tokens = cfg.num_training_tokens
+        self.dataloader = CycleIterator(self.dataloader)
         self.tokens_per_batch = cfg.batch_size * real_seq_len
         self.training_steps = self.num_training_tokens // self.tokens_per_batch
+        self.training_steps //= dist.get_world_size() if dist.is_initialized() else 1
 
         # Variables for global stats
         self.global_step = 0
@@ -109,38 +111,20 @@ class SaeTrainer:
         # Handle different types of lr: dict, float, or None
         self.lrs = {}
         self.pgs = []
-        if isinstance(cfg.lr, dict):
-            # Ensure that the keys of lr match the keys of the SAEs
-            if set(cfg.lr.keys()) != set(cfg.hookpoints):
-                raise ValueError(
-                    "lr dict keys must match the hookpoints. "
-                    f"Expected: {cfg.hookpoints}, got: {cfg.lr.keys()}"
-                )
-            # Create parameter groups with individual learning rates
-            for hook, sae in self.saes.items():
-                lr = cfg.lr[hook]
-                self.pgs.append(
-                    {
-                        "params": sae.parameters(),
-                        "lr": lr,
-                    }
-                )
-                self.lrs[hook] = lr
-        else:
-            for hook, sae in self.saes.items():
-                if cfg.lr is not None:
-                    lr = cfg.lr
-                else:
-                    num_latents = sae.num_latents
-                    # Compute default lr based on num_latents
-                    lr = 2e-4 / (num_latents / (2**14)) ** 0.5
-                self.pgs.append(
-                    {
-                        "params": sae.parameters(),
-                        "lr": lr,
-                    }
-                )
-                self.lrs[hook] = lr
+        for hook, sae in self.saes.items():
+            if cfg.lr is not None:
+                lr = cfg.lr
+            else:
+                num_latents = sae.num_latents
+                # Compute default lr based on num_latents
+                lr = 2e-4 / (num_latents / (2**14)) ** 0.5
+            self.pgs.append(
+                {
+                    "params": sae.parameters(),
+                    "lr": lr,
+                }
+            )
+            self.lrs[hook] = lr
 
         # Deduplicate and sort the learning rates for logging
         lrs_set = sorted(set(self.lrs.values()))
@@ -208,19 +192,26 @@ class SaeTrainer:
         name_to_module = {name: self.model.get_submodule(name) for name in self.cfg.hookpoints}
         module_to_name = {v: k for k, v in name_to_module.items()}
         scaling_factors = estimate_norm_scaling_factor(
-            self.dl,
+            self.dataloader,
             self.model,
-            self.cfg.num_norm_estimation_tokens,
+            (
+                self.cfg.num_norm_estimation_tokens // dist.get_world_size()
+                if dist.is_initialized()
+                else 1
+            ),
             self.cfg.hook,
             module_to_name=module_to_name,
             target_norm=self.cfg.normalize_activations,
             device=self.model.device,
         )
         if dist.is_available() and dist.is_initialized():
-            scaling_factors = {
-                name: dist.all_reduce(scaling_factor, op=dist.ReduceOp.AVG)
-                for name, scaling_factor in scaling_factors.items()
-            }
+            all_scaling_factors = [None for _ in range(dist.get_world_size())]
+            dist.all_gather_object(all_scaling_factors, scaling_factors)
+            # Average the scaling factors across all ranks
+            for hook_name in scaling_factors.keys():
+                scaling_factors[hook_name] = sum(
+                    sf[hook_name] for sf in all_scaling_factors if sf is not None
+                ) / len(all_scaling_factors)
         self.scaling_factors = scaling_factors
 
     def load_state(self, path: str):
@@ -292,6 +283,7 @@ class SaeTrainer:
         num_tokens_in_step = 0
 
         # For logging purposes
+        elapsed_tokens = 0
         avg_l1 = defaultdict(float)
         avg_l0 = defaultdict(float)
         avg_l2 = defaultdict(float)
@@ -310,19 +302,21 @@ class SaeTrainer:
         maybe_wrapped: dict[str, DDP] | dict[str, Sae] = {}
         module_to_name = {v: k for k, v in name_to_module.items()}
 
-        for batch_idx, batch in enumerate(self.dl):
+        for batch_idx, batch in enumerate(self.dataloader):
             if self.global_step >= self.training_steps:
                 break
 
             hidden_dict.clear()
 
             # Bookkeeping for dead feature detection
-            num_tokens_in_step += batch["input_ids"].numel()
+            tokens_in_batch = batch["input_ids"].numel()
+            elapsed_tokens += tokens_in_batch * (dist.get_world_size() if ddp else 1)
+            num_tokens_in_step += tokens_in_batch
 
             # Forward pass on the model to get the next batch of activations
             handles = [
                 mod.register_forward_hook(
-                    partial(
+                    forward_hook_wrapper(
                         self.cfg.hook,
                         module_to_name=module_to_name,
                         hidden_dict=hidden_dict,
@@ -332,7 +326,7 @@ class SaeTrainer:
             ]
             try:
                 with torch.no_grad():
-                    self.model(batch["input_ids"].to(device))
+                    self.model(**send_to_device(batch, device))
             finally:
                 for handle in handles:
                     handle.remove()
@@ -386,6 +380,24 @@ class SaeTrainer:
                 if raw.cfg.normalize_decoder:
                     raw.set_decoder_norm_to_unit_norm()
 
+                # Normalize the activations
+                if self.cfg.normalize_activations:
+                    with torch.no_grad():
+                        hiddens = hiddens * self.scaling_factors[name]
+
+                # Save the running mean of the L2 norm of the activations
+                l2_norm = hiddens.norm(p=2, dim=-1).mean()
+                if name not in running_mean_act_norm:
+                    running_mean_act_norm[name] = l2_norm
+                else:
+                    running_mean_act_norm[name] = update_running_mean(
+                        running_mean_act_norm[name], l2_norm, batch_idx + 1
+                    )
+                running_mean_act_norm[name] = float(
+                    self.maybe_all_reduce(running_mean_act_norm[name], "mean")
+                )
+                avg_act_norm[name] = float(self.maybe_all_reduce(l2_norm, "mean"))
+
                 acc_steps = self.cfg.grad_acc_steps * self.cfg.micro_acc_steps
                 denom = acc_steps * self.cfg.wandb_log_frequency
                 wrapped = maybe_wrapped[name]
@@ -429,10 +441,9 @@ class SaeTrainer:
                             l0 = (out.l1_loss / self.cfg.sae.jumprelu_target_l0 - 1) ** 2
                         else:
                             l0 = out.l1_loss
+                        sparsity_loss = l0
                         if self.l1_scheduler is not None:
-                            sparsity_loss = self.l1_scheduler.current_l1_coefficient * l0
-                        else:
-                            sparsity_loss = l0
+                            sparsity_loss *= self.l1_scheduler.current_l1_coefficient
                     else:
                         sparsity_loss = 0.0
 
@@ -517,6 +528,9 @@ class SaeTrainer:
                             f"norm/running_mean_act_norm_{name}": running_mean_act_norm[name]
                             for name in self.saes
                         }
+                    )
+                    info.update(
+                        {"tokens/elapsed": elapsed_tokens * (dist.get_world_size() if ddp else 1)}
                     )
 
                     avg_auxk_loss.clear()
@@ -624,30 +638,40 @@ class SaeTrainer:
         path = f"{run_path}/step_{self.global_step}"
         rank_zero = not dist.is_initialized() or dist.get_rank() == 0
         if rank_zero:
-            os.makedirs(path, exist_ok=True)
+            os.makedirs(run_path, exist_ok=True)
 
-        if rank_zero or self.cfg.distribute_modules:
-            print("Removing old checkpoints")
-
+        if rank_zero:
             if self.cfg.keep_last_n_checkpoints > 0:
                 checkpoints = [f"{run_path}/{p}" for p in os.listdir(run_path) if "step" in p]
                 checkpoints = sorted(
-                    checkpoints, key=lambda x: int(x.split("_")[-1]), reverse=True
+                    checkpoints, key=lambda x: int(x.split("_")[-1]), reverse=False
                 )
                 if self.cfg.keep_last_n_checkpoints == 1:
                     to_remove = checkpoints
-                else:
+                elif len(checkpoints) >= self.cfg.keep_last_n_checkpoints:
                     to_remove = checkpoints[: -self.cfg.keep_last_n_checkpoints + 1]
+                else:
+                    to_remove = []
                 for path_to_remove in to_remove:
-                    shutil.rmtree(f"{path_to_remove}", ignore_errors=True)
+                    shutil.rmtree(f"{path_to_remove}", ignore_errors=False)
 
-            print("Saving new checkpoint")
+        # Gather SAEs from all ranks
+        if rank_zero or self.distribute_modules:
+            os.makedirs(path, exist_ok=True)
+            if dist.is_initialized():
+                all_saes = [None for _ in range(dist.get_world_size())]
+                dist.gather_object(self.saes, all_saes if rank_zero else None)
+            else:
+                all_saes = [self.saes]
 
-            for hook, sae in self.saes.items():
-                assert isinstance(sae, Sae)
+            for saes in all_saes:
+                if saes is not None:
+                    for hook, sae in saes.items():
+                        assert isinstance(sae, Sae)
+                        sae.save_to_disk(f"{path}/{hook}")
 
-                sae.save_to_disk(f"{path}/{hook}")
-
+        # We can save the optimizer and scheduler states only from rank 0
+        # because they are the same across all ranks
         if rank_zero:
             torch.save(self.lr_scheduler.state_dict(), f"{path}/lr_scheduler.pt")
             torch.save(self.optimizer.state_dict(), f"{path}/optimizer.pt")
@@ -658,7 +682,7 @@ class SaeTrainer:
                 },
                 f"{path}/state.pt",
             )
-            if self.l1_scheduler is not None and self.cfg.sae.k <= 0:
+            if self.l1_scheduler is not None:
                 torch.save(self.l1_scheduler.state_dict(), f"{path}/l1_scheduler.pt")
             if self.cfg.normalize_activations:
                 torch.save(self.scaling_factors, f"{path}/scaling_factors.pt")

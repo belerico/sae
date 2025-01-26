@@ -1,10 +1,9 @@
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Optional, Tuple
+from multiprocessing import cpu_count
 
-from simple_parsing import Serializable, list_field
-from torch import Tensor, nn
+from simple_parsing import Serializable, field, list_field
 
-from .utils import standard_hook
+from sae.hooks import HookWithKwargs, standard_hook
 
 
 @dataclass
@@ -58,16 +57,14 @@ class TrainConfig(Serializable):
 
     batch_size: int = 8
     """Batch size measured in sequences.
-    The effective SAE batch-size is `cfg.batch_size * cfg.max_seq_len`"""
+    The effective SAE batch-size is `cfg.batch_size * L`, where `L` is the sequence length after
+    the `cfg.hook` function has been applied."""
 
     max_seq_len: int = 1024
     """The maximum sequence length"""
 
     num_training_tokens: int = 1_000_000
     """Number of total training tokens"""
-
-    cycle_iterator: bool = True
-    """Whether to use a CycleIterator"""
 
     grad_acc_steps: int = 1
     """Number of steps over which to accumulate gradients."""
@@ -84,7 +81,7 @@ class TrainConfig(Serializable):
     adam_betas: tuple[float, float] = (0.0, 0.999)
     """Adam betas"""
 
-    lr: dict[str, float] | float | None = None
+    lr: float | None = None
     """Base lr. If None, it is automatically chosen based on the number of latents."""
 
     lr_scheduler_name: str = "constant"
@@ -135,10 +132,7 @@ class TrainConfig(Serializable):
     cluster_hookpoints: dict[str, list[str]] | None = None
     """List of hookpoints to train SAEs on."""
 
-    hook: Callable[
-        [nn.Module, Tuple[Any, ...], Any, Dict[nn.Module, str], Dict[str, Tensor]],
-        Optional[Any],
-    ] | None = standard_hook
+    hook: HookWithKwargs | None = standard_hook
     """The hook function to be used to collect model activations"""
 
     keep_last_n_checkpoints: int = 5
@@ -157,3 +151,53 @@ class TrainConfig(Serializable):
         ), "Cannot specify both `layers` and `layer_stride`."
         if self.keep_last_n_checkpoints == 0:
             raise ValueError("`keep_last_n_checkpoints` must be at least 1 or -1.")
+
+
+@dataclass
+class RunConfig(TrainConfig):
+    model: str = field(
+        default="EleutherAI/pythia-160m",
+        positional=True,
+    )
+    """Name of the model to train."""
+
+    dataset: str = field(
+        default="togethercomputer/RedPajama-Data-1T-Sample",
+        positional=True,
+    )
+    """Path to the dataset to use for training."""
+
+    dataset_name: str | None = None
+    """Name of the dataset."""
+
+    split: str = "train"
+    """Dataset split to use for training."""
+
+    hf_token: str | None = None
+    """Huggingface API token for downloading models."""
+
+    revision: str | None = None
+    """Model revision to use for training."""
+
+    load_in_8bit: bool = False
+    """Load the model in 8-bit mode."""
+
+    resume: bool = False
+    """Whether to try resuming from the checkpoint present at `run_name`."""
+
+    finetune: str | None = None
+    """Path to pretrained SAEs to finetune."""
+
+    seed: int = 42
+    """Random seed for shuffling the dataset."""
+
+    data_preprocessing_num_proc: int = field(
+        default_factory=lambda: cpu_count() // 2,
+    )
+    """Number of processes to use for preprocessing data"""
+
+    streaming: bool = True
+    """Whether to stream the dataset or not."""
+
+    text_key: str = "text"
+    """Key to use for tokenizing the dataset."""
