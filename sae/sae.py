@@ -16,10 +16,13 @@ from .utils import decoder_impl
 
 
 class EncoderOutput(NamedTuple):
-    top_acts: Tensor
+    feature_acts: Tensor
+    """SAE features after ReLU/JumpReLU"""
+
+    top_acts: Tensor | None
     """Activations of the top-k latents."""
 
-    top_indices: Tensor
+    top_indices: Tensor | None
     """Indices of the top-k features."""
 
 
@@ -263,38 +266,49 @@ class Sae(nn.Module):
 
         return nn.functional.relu(out)
 
-    def select_topk(self, latents: Tensor) -> EncoderOutput:
+    def select_topk(self, latents: Tensor) -> torch.return_types.topk:
         """Select the top-k latents."""
-        return EncoderOutput(*latents.topk(self.cfg.k, sorted=False))
+        return latents.topk(self.cfg.k, sorted=False)
 
     def encode(self, x: Tensor) -> EncoderOutput:
         """Encode the input and select the top-k latents."""
-        return self.select_topk(self.pre_acts(x))
+        # Encode, decode and compute residual
+        feature_acts = self.pre_acts(x)
+        if self.cfg.k <= 0:
+            # ReLU/JumpReLU SAE
+            top_acts, top_indices = None, None
+        else:
+            # Top-k SAE
+            top_acts, top_indices = self.select_topk(feature_acts)
+        return EncoderOutput(feature_acts, top_acts, top_indices)
 
-    def decode(self, top_acts: Tensor, top_indices: Tensor) -> Tensor:
-        assert self.W_dec is not None, "Decoder weight was not initialized."
-
-        y = decoder_impl(top_indices, top_acts.to(self.dtype), self.W_dec.mT)
-        return y + self.b_dec
+    def decode(
+        self,
+        feature_acts: Tensor | None = None,
+        top_acts: Tensor | None = None,
+        top_indices: Tensor | None = None,
+    ) -> Tensor:
+        if self.W_dec is None:
+            raise RuntimeError("Decoder weight was not initialized.")
+        if not ((feature_acts is None) ^ (top_acts is None)):
+            raise ValueError("Exactly one of `feature_acts` or `top_acts` should be provided.")
+        if top_acts is not None:
+            if top_indices is None:
+                raise ValueError("`top_indices` must be provided if `top_acts` is provided.")
+            y = decoder_impl(top_indices, top_acts.to(self.dtype), self.W_dec.mT)
+            return y + self.b_dec
+        if self.jumprelu:
+            # JumpReLU SAE
+            threshold = torch.exp(self.log_threshold)
+            feature_acts = cast(
+                torch.Tensor, JumpReLU.apply(feature_acts, threshold, self.bandwidth)
+            )
+        return feature_acts @ self.W_dec + self.b_dec
 
     def forward(self, x: Tensor, dead_mask: Tensor | None = None) -> ForwardOutput:
         # Encode, decode and compute residual
-        if self.cfg.k <= 0:
-            if self.jumprelu:
-                sae_in = x.to(self.dtype) - self.b_dec
-                pre_acts = self.encoder(sae_in)
-                threshold = torch.exp(self.log_threshold)
-                feature_acts = cast(
-                    torch.Tensor, JumpReLU.apply(pre_acts, threshold, self.bandwidth)
-                )
-            else:
-                feature_acts = self.pre_acts(x)
-            top_acts, top_indices = None, None
-            sae_out = feature_acts @ self.W_dec + self.b_dec
-        else:
-            feature_acts = self.pre_acts(x)
-            top_acts, top_indices = self.select_topk(feature_acts)
-            sae_out = self.decode(top_acts, top_indices)
+        feature_acts, top_acts, top_indices = self.encode(x)
+        sae_out = self.decode(feature_acts, top_acts, top_indices)
 
         # SAE residual
         e = sae_out - x
@@ -339,7 +353,9 @@ class Sae(nn.Module):
         if self.cfg.k <= 0:
             if self.jumprelu:
                 threshold = torch.exp(self.log_threshold)
-                pre_acts_thr = cast(torch.Tensor, Step.apply(pre_acts, threshold, self.bandwidth))  # type: ignore
+                pre_acts_thr = cast(
+                    torch.Tensor, Step.apply(feature_acts, threshold, self.bandwidth)
+                )
                 sparsity_loss = torch.sum(pre_acts_thr, dim=-1).mean()
             elif self.W_dec is not None:
                 # Scale features by the norm of their directions
