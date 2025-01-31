@@ -291,7 +291,6 @@ class SaeTrainer:
         avg_fvu = defaultdict(float)
         avg_auxk_loss = defaultdict(float)
         avg_multi_topk_fvu = defaultdict(float)
-        avg_act_norm = defaultdict(float)
         running_mean_act_norm = {}
 
         # Function to update the running mean
@@ -350,6 +349,9 @@ class SaeTrainer:
                     running_mean_act_norm[name] = update_running_mean(
                         running_mean_act_norm[name], l2_norm, batch_idx + 1
                     )
+                running_mean_act_norm[name] = float(
+                    self.maybe_all_reduce(running_mean_act_norm[name], "mean")
+                )
 
             for name, hiddens in hidden_dict.items():
                 raw = self.saes[name]  # 'raw' never has a DDP wrapper
@@ -380,24 +382,6 @@ class SaeTrainer:
                 # Make sure the W_dec is still unit-norm
                 if raw.cfg.normalize_decoder:
                     raw.set_decoder_norm_to_unit_norm()
-
-                # Normalize the activations
-                if self.cfg.normalize_activations:
-                    with torch.no_grad():
-                        hiddens = hiddens * self.scaling_factors[name]
-
-                # Save the running mean of the L2 norm of the activations
-                l2_norm = hiddens.norm(p=2, dim=-1).mean()
-                if name not in running_mean_act_norm:
-                    running_mean_act_norm[name] = l2_norm
-                else:
-                    running_mean_act_norm[name] = update_running_mean(
-                        running_mean_act_norm[name], l2_norm, batch_idx + 1
-                    )
-                running_mean_act_norm[name] = float(
-                    self.maybe_all_reduce(running_mean_act_norm[name], "mean")
-                )
-                avg_act_norm[name] = float(self.maybe_all_reduce(l2_norm, "mean"))
 
                 acc_steps = self.cfg.grad_acc_steps * self.cfg.micro_acc_steps
                 denom = acc_steps * self.cfg.wandb_log_frequency
@@ -537,7 +521,6 @@ class SaeTrainer:
                     avg_l0.clear()
                     avg_l2.clear()
                     avg_multi_topk_fvu.clear()
-                    avg_act_norm.clear()
 
                     if self.cfg.distribute_modules:
                         outputs = [{} for _ in range(dist.get_world_size())]

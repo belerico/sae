@@ -301,7 +301,6 @@ class ClusterSaeTrainer:
         avg_fvu = defaultdict(float)
         avg_auxk_loss = defaultdict(float)
         avg_multi_topk_fvu = defaultdict(float)
-        avg_act_norm = defaultdict(float)
         running_mean_act_norm = {}
 
         # Function to update the running mean
@@ -360,6 +359,9 @@ class ClusterSaeTrainer:
                     running_mean_act_norm[name] = update_running_mean(
                         running_mean_act_norm[name], l2_norm, batch_idx + 1
                     )
+                running_mean_act_norm[name] = self.maybe_all_reduce(
+                    running_mean_act_norm[name], "mean"
+                )
 
             # For every cluster of layers, sample one activation per layer
             cluster_layers_dict = {}
@@ -549,7 +551,6 @@ class ClusterSaeTrainer:
                     avg_l0.clear()
                     avg_l2.clear()
                     avg_multi_topk_fvu.clear()
-                    avg_act_norm.clear()
 
                     if self.cfg.distribute_modules:
                         outputs = [{} for _ in range(dist.get_world_size())]
