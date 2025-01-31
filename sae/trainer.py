@@ -83,7 +83,6 @@ class SaeTrainer:
         # SAEs
         self.model = model
         device = model.device
-        print(f"Input shapes: {input_shapes}")
         self.saes = {
             hook: Sae(input_shapes[hook][-1], cfg.sae, device) for hook in self.local_hookpoints()
         }
@@ -334,25 +333,6 @@ class SaeTrainer:
             if self.cfg.distribute_modules:
                 hidden_dict = self.scatter_hiddens(hidden_dict)
 
-            # Normalize the activations
-            if self.cfg.normalize_activations:
-                with torch.no_grad():
-                    for name, activations in hidden_dict.items():
-                        hidden_dict[name] = activations * self.scaling_factors[name]
-
-            # Save the running mean of the L2 norm of the activations
-            for name, hiddens in hidden_dict.items():
-                l2_norm = hiddens.norm(p=2, dim=-1).mean()
-                if name not in running_mean_act_norm:
-                    running_mean_act_norm[name] = l2_norm
-                else:
-                    running_mean_act_norm[name] = update_running_mean(
-                        running_mean_act_norm[name], l2_norm, batch_idx + 1
-                    )
-                running_mean_act_norm[name] = float(
-                    self.maybe_all_reduce(running_mean_act_norm[name], "mean")
-                )
-
             for name, hiddens in hidden_dict.items():
                 raw = self.saes[name]  # 'raw' never has a DDP wrapper
 
@@ -382,6 +362,23 @@ class SaeTrainer:
                 # Make sure the W_dec is still unit-norm
                 if raw.cfg.normalize_decoder:
                     raw.set_decoder_norm_to_unit_norm()
+
+                # Normalize the activations
+                if self.cfg.normalize_activations:
+                    with torch.no_grad():
+                        hiddens = hiddens * self.scaling_factors[name]
+
+                # Save the running mean of the L2 norm of the activations
+                l2_norm = hiddens.norm(p=2, dim=-1).mean()
+                if name not in running_mean_act_norm:
+                    running_mean_act_norm[name] = l2_norm
+                else:
+                    running_mean_act_norm[name] = update_running_mean(
+                        running_mean_act_norm[name], l2_norm, batch_idx + 1
+                    )
+                running_mean_act_norm[name] = float(
+                    self.maybe_all_reduce(running_mean_act_norm[name], "mean")
+                )
 
                 acc_steps = self.cfg.grad_acc_steps * self.cfg.micro_acc_steps
                 denom = acc_steps * self.cfg.wandb_log_frequency
