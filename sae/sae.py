@@ -1,7 +1,7 @@
 import json
 from fnmatch import fnmatch
 from pathlib import Path
-from typing import Any, NamedTuple, cast
+from typing import Any, NamedTuple, Tuple, cast
 
 import einops
 import numpy as np
@@ -13,17 +13,6 @@ from torch import Tensor, nn
 
 from .config import SaeConfig
 from .utils import decoder_impl
-
-
-class EncoderOutput(NamedTuple):
-    feature_acts: Tensor
-    """SAE features after ReLU/JumpReLU"""
-
-    top_acts: Tensor | None
-    """Activations of the top-k latents."""
-
-    top_indices: Tensor | None
-    """Indices of the top-k features."""
 
 
 class ForwardOutput(NamedTuple):
@@ -48,7 +37,7 @@ class ForwardOutput(NamedTuple):
     """Multi-TopK FVU, if applicable."""
 
     l1_loss: Tensor
-    """L1 loss for JumpReLU architectures"""
+    """Sparsity loss for ReLU/JumpReLU architectures"""
 
     l2_loss: Tensor
     """L2 loss over the reconstruction"""
@@ -259,28 +248,30 @@ class Sae(nn.Module):
     def dtype(self):
         return self.encoder.weight.dtype
 
-    def pre_acts(self, x: Tensor) -> Tensor:
+    def encode(self, x: Tensor) -> Tensor:
+        """Encode the input tensor, while first removing the decoder bias."""
         # Remove decoder bias as per Anthropic
         sae_in = x.to(self.dtype) - self.b_dec
-        out = self.encoder(sae_in)
+        return self.encoder(sae_in)
 
-        return nn.functional.relu(out)
-
-    def select_topk(self, latents: Tensor) -> torch.return_types.topk:
-        """Select the top-k latents."""
-        return latents.topk(self.cfg.k, sorted=False)
-
-    def encode(self, x: Tensor) -> EncoderOutput:
-        """Encode the input and select the top-k latents."""
-        # Encode, decode and compute residual
-        feature_acts = self.pre_acts(x)
+    def activation(self, pre_acts: Tensor) -> Tuple[Tensor, Tensor | None, Tensor | None]:
+        """Apply the activation function to the pre-activations."""
         if self.cfg.k <= 0:
-            # ReLU/JumpReLU SAE
+            if self.jumprelu:
+                # JumpReLU SAE
+                feature_acts = cast(
+                    torch.Tensor,
+                    JumpReLU.apply(pre_acts, torch.exp(self.log_threshold), self.bandwidth),
+                )
+            else:
+                # ReLU SAE
+                feature_acts = torch.nn.functional.relu(pre_acts)
             top_acts, top_indices = None, None
         else:
             # Top-k SAE
-            top_acts, top_indices = self.select_topk(feature_acts)
-        return EncoderOutput(feature_acts, top_acts, top_indices)
+            feature_acts = torch.nn.functional.relu(pre_acts)
+            top_acts, top_indices = feature_acts.topk(self.cfg.k, sorted=False)
+        return feature_acts, top_acts, top_indices
 
     def decode(
         self,
@@ -288,6 +279,7 @@ class Sae(nn.Module):
         top_acts: Tensor | None = None,
         top_indices: Tensor | None = None,
     ) -> Tensor:
+        """Decode the features back to the input space."""
         if self.W_dec is None:
             raise RuntimeError("Decoder weight was not initialized.")
         if not ((feature_acts is None) ^ (top_acts is None)):
@@ -297,17 +289,12 @@ class Sae(nn.Module):
                 raise ValueError("`top_indices` must be provided if `top_acts` is provided.")
             y = decoder_impl(top_indices, top_acts.to(self.dtype), self.W_dec.mT)
             return y + self.b_dec
-        if self.jumprelu:
-            # JumpReLU SAE
-            threshold = torch.exp(self.log_threshold)
-            feature_acts = cast(
-                torch.Tensor, JumpReLU.apply(feature_acts, threshold, self.bandwidth)
-            )
         return feature_acts @ self.W_dec + self.b_dec
 
     def forward(self, x: Tensor, dead_mask: Tensor | None = None) -> ForwardOutput:
         # Encode, decode and compute residual
-        feature_acts, top_acts, top_indices = self.encode(x)
+        pre_acts = self.encode(x)
+        feature_acts, top_acts, top_indices = self.activation(pre_acts)
         sae_out = self.decode(feature_acts, top_acts, top_indices)
 
         # SAE residual
@@ -352,9 +339,9 @@ class Sae(nn.Module):
         sparsity_loss = sae_out.new_tensor(0.0)
         if self.cfg.k <= 0:
             if self.jumprelu:
-                threshold = torch.exp(self.log_threshold)
                 pre_acts_thr = cast(
-                    torch.Tensor, Step.apply(feature_acts, threshold, self.bandwidth)
+                    torch.Tensor,
+                    Step.apply(pre_acts, torch.exp(self.log_threshold), self.bandwidth),
                 )
                 sparsity_loss = torch.sum(pre_acts_thr, dim=-1).mean()
             elif self.W_dec is not None:
