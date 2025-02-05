@@ -311,7 +311,9 @@ class SaeTrainer:
             hidden_dict.clear()
 
             # Bookkeeping for dead feature detection
-            tokens_in_batch = batch["input_ids"].numel() * (dist.get_world_size() if ddp else 1)
+            tokens_in_batch = batch["input_ids"].numel() * (
+                dist.get_world_size() if dist.is_initialized() else 1
+            )
             elapsed_tokens += tokens_in_batch
             num_tokens_in_step += tokens_in_batch
 
@@ -365,7 +367,6 @@ class SaeTrainer:
                 # Make sure the W_dec is still unit-norm
                 if raw.cfg.normalize_decoder:
                     raw.set_decoder_norm_to_unit_norm()
-
                 # Normalize the activations
                 if self.cfg.normalize_activations:
                     with torch.no_grad():
@@ -519,9 +520,7 @@ class SaeTrainer:
                             for name in self.saes
                         }
                     )
-                    info.update(
-                        {"tokens/elapsed": elapsed_tokens * (dist.get_world_size() if ddp else 1)}
-                    )
+                    info.update({"tokens/elapsed": elapsed_tokens})
 
                     avg_auxk_loss.clear()
                     avg_fvu.clear()
